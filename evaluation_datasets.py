@@ -200,6 +200,8 @@ def latex_table(mean_scalars: Mapping[str, float]) -> str:
             "pts_within_4",
             "pts_within_8",
             "pts_within_16",
+            "runtime_total_sec",
+            "runtime_keypoint_sec",
         ]
         header = (
             "AJ & $<\\delta^{x}_{avg}$ & OA & Jac. $\\delta^{0}$ & "

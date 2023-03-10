@@ -31,6 +31,9 @@ from ml_collections import config_dict
 import numpy as np
 import tensorflow_datasets as tfds
 import tensorflow as tf
+import time
+import pickle
+import random
 
 from tapnet import evaluation_datasets
 from tapnet import tapnet_model
@@ -1000,7 +1003,15 @@ class SupervisedPointPrediction(task.Task):
                 0
             ]  # pytype: disable=attribute-error  # 'video' entry is array-valued
             num_samples += batch_size
+
+            t_start = time.time()
             scalars, viz = eval_batch_fn(params, state, inputs, rng)
+            t_elapsed = time.time() - t_start
+            scalars["runtime_total_sec"] = np.array([t_elapsed])
+            scalars["runtime_keypoint_sec"] = np.array(
+                [t_elapsed / inputs[input_key]["query_points"].shape[1]]
+            )
+
             write_viz = batch_id < 10
             if "eval_davis_points" in mode or "eval_robotics_points" in mode:
                 # Only write videos sometimes for the small datasets; otherwise
@@ -1085,6 +1096,41 @@ class SupervisedPointPrediction(task.Task):
             points = np.concatenate((t, y, x), axis=-1).astype(np.int32)
             return points
 
+        def _sample_mask_points(vid_path, num_points):
+            track_idx = int(
+                vid_path.split("tracks/")[2].split("/")[0].split("track")[1]
+            )
+            pkl_path = path.dirname(vid_path) + f"/../track_{track_idx}.pkl"
+            with open(pkl_path, "rb") as f:
+                track = pickle.load(f)
+            mid_idx = int(len(track["track_frames"]) / 2)
+            mid_frame = track["track_frames"][mid_idx]
+            mask_locs = mid_frame["mask_locs"]
+            mask_locs[0] = np.floor_divide(mask_locs[0], 4).astype(int)
+            mask_locs[1] = np.floor_divide(mask_locs[1], 4.78).astype(int)
+
+            mask_locs = np.unique(mask_locs, axis=0)
+            idx = random.choices(list(range(mask_locs.shape[1])), k=num_points)
+            pts = mask_locs[:, idx]
+            pts = pts.T
+            pts = pts[:, [1, 0]]
+
+            import cv2
+
+            im = cv2.imread(mid_frame["rgb_path"])
+            im = cv2.resize(im, (256, 256))
+            for i in range(pts.shape[0]):
+                p = pts[i]
+                im = cv2.circle(
+                    im.copy(), (p[1], p[0]), 2, color=(0, 0, 255), thickness=-1
+                )
+            cv2.imwrite("/data2/lyft-tracks/tracks/track92/anchor.jpg", im)
+
+            points = np.zeros((pts.shape[0], pts.shape[1] + 1))
+            points[:, 1:] = pts
+            points[:, 0] = mid_idx
+            return points
+
         config = self.config.inference
         input_video_path = config.input_video_path
         output_video_path = config.output_video_path
@@ -1097,9 +1143,10 @@ class SupervisedPointPrediction(task.Task):
         logging.info("resize video to (%s, %s)", resize_height, resize_width)
         video = media.resize_video(video, (resize_height, resize_width))
         video = video.astype(np.float32) / 255 * 2 - 1
-        query_points = _sample_random_points(
-            num_frames, resize_height, resize_width, num_points
-        )
+        # query_points = _sample_random_points(
+        #    num_frames, resize_height, resize_width, num_points
+        # )
+        query_points = _sample_mask_points(input_video_path, num_points)
         occluded = np.zeros((num_points, num_frames), dtype=np.float32)
         inputs = {
             self.input_key: {
