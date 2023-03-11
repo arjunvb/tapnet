@@ -519,17 +519,7 @@ def create_rgb_stacking_dataset(
         else:
             raise ValueError(f"Unknown query mode {query_mode}.")
 
-        with tf.io.gfile.GFile(pickle_path, "rb") as f:
-            robotics_points_dataset = pickle.load(f)
-
-        for example in robotics_points_dataset:
-            frames = example["video"]
-            frames = frames.astype(np.float32) / 255.0 * 2.0 - 1.0
-            target_points = example["points"]
-            target_occ = example["occluded"]
-            target_points *= np.array(
-                [tapnet_model.TRAIN_SIZE[2], tapnet_model.TRAIN_SIZE[1]]
-            )
+        yield {"robotics": converted}
 
 
 def create_kinetics_dataset(
