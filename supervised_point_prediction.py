@@ -34,6 +34,7 @@ import tensorflow as tf
 import time
 import pickle
 import random
+import os
 
 from tapnet import evaluation_datasets
 from tapnet import tapnet_model
@@ -1096,10 +1097,7 @@ class SupervisedPointPrediction(task.Task):
             points = np.concatenate((t, y, x), axis=-1).astype(np.int32)
             return points
 
-        def _sample_mask_points(vid_path, num_points):
-            track_idx = int(
-                vid_path.split("tracks/")[2].split("/")[0].split("track")[1]
-            )
+        def _sample_mask_points(vid_path, track_idx, num_points):
             pkl_path = path.dirname(vid_path) + f"/../track_{track_idx}.pkl"
             with open(pkl_path, "rb") as f:
                 track = pickle.load(f)
@@ -1124,7 +1122,7 @@ class SupervisedPointPrediction(task.Task):
                 im = cv2.circle(
                     im.copy(), (p[1], p[0]), 2, color=(0, 0, 255), thickness=-1
                 )
-            cv2.imwrite("/data2/lyft-tracks/tracks/track92/anchor.jpg", im)
+            cv2.imwrite(f"/data2/lyft-tracks/tracks/track{track_idx}/anchor.jpg", im)
 
             points = np.zeros((pts.shape[0], pts.shape[1] + 1))
             points[:, 1:] = pts
@@ -1137,6 +1135,10 @@ class SupervisedPointPrediction(task.Task):
         resize_height, resize_width = config.resize_height, config.resize_width
         num_points = config.num_points
 
+        track_idx = int(
+            input_video_path.split("tracks/")[2].split("/")[0].split("track")[1]
+        )
+
         logging.info("load video from %s", input_video_path)
         video = media.read_video(input_video_path)
         num_frames, fps = video.metadata.num_images, video.metadata.fps
@@ -1146,7 +1148,7 @@ class SupervisedPointPrediction(task.Task):
         # query_points = _sample_random_points(
         #    num_frames, resize_height, resize_width, num_points
         # )
-        query_points = _sample_mask_points(input_video_path, num_points)
+        query_points = _sample_mask_points(input_video_path, track_idx, num_points)
         occluded = np.zeros((num_points, num_frames), dtype=np.float32)
         inputs = {
             self.input_key: {
@@ -1177,5 +1179,12 @@ class SupervisedPointPrediction(task.Task):
         )
         media.write_video(output_video_path, painted_frames, fps=fps)
         logging.info("Inference result saved to %s", output_video_path)
+        logging.info(f"tracks = {tracks.shape}")
+
+        exp_dir = f"/data2/lyft-tracks/res_track_{track_idx}_tapnet_noblur_nomob_lyft/trajectories/"
+        os.makedirs(exp_dir, exist_ok=True)
+        track_path = f"{exp_dir}/track.npy"
+        with open(track_path, "wb") as f:
+            np.save(f, tracks)
 
         return {"": 0}
