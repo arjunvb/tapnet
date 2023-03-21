@@ -1129,11 +1129,17 @@ class SupervisedPointPrediction(task.Task):
             points[:, 0] = mid_idx
             return points
 
+        def _load_points_from_file(query_path):
+            with open(query_path, "rb") as f:
+                points = np.load(f)
+            return points
+
         config = self.config.inference
         input_video_path = config.input_video_path
+        input_query_path = config.input_query_path
         output_video_path = config.output_video_path
         resize_height, resize_width = config.resize_height, config.resize_width
-        num_points = config.num_points
+        # num_points = config.num_points
 
         track_idx = int(
             input_video_path.split("tracks/")[2].split("/")[0].split("track")[1]
@@ -1148,7 +1154,9 @@ class SupervisedPointPrediction(task.Task):
         # query_points = _sample_random_points(
         #    num_frames, resize_height, resize_width, num_points
         # )
-        query_points = _sample_mask_points(input_video_path, track_idx, num_points)
+        # query_points = _sample_mask_points(input_video_path, track_idx, num_points)
+        query_points = _load_points_from_file(input_query_path)
+        num_points = query_points.shape[0]
         occluded = np.zeros((num_points, num_frames), dtype=np.float32)
         inputs = {
             self.input_key: {
@@ -1169,22 +1177,21 @@ class SupervisedPointPrediction(task.Task):
         )
         occluded = occlusion_logits > 0
 
-        video = (video + 1) * 255 / 2
-        video = video.astype(np.uint8)
+        if output_video_path != "":
+            video = (video + 1) * 255 / 2
+            video = video.astype(np.uint8)
 
-        painted_frames = viz_utils.paint_point_track(
-            video,
-            tracks[0],
-            ~occluded[0],
-        )
-        media.write_video(output_video_path, painted_frames, fps=fps)
-        logging.info("Inference result saved to %s", output_video_path)
-        logging.info(f"tracks = {tracks.shape}")
+            painted_frames = viz_utils.paint_point_track(
+                video,
+                tracks[0],
+                ~occluded[0],
+            )
+            media.write_video(output_video_path, painted_frames, fps=fps)
+            logging.info("Inference result saved to %s", output_video_path)
+            logging.info(f"tracks = {tracks.shape}")
 
-        exp_dir = f"/data2/lyft-tracks/res_track_{track_idx}_tapnet_noblur_nomob_lyft/trajectories/"
-        os.makedirs(exp_dir, exist_ok=True)
-        track_path = f"{exp_dir}/track.npy"
-        with open(track_path, "wb") as f:
-            np.save(f, tracks)
+        if config.output_track_path != "":
+            with open(config.output_track_path, "wb") as f:
+                np.save(f, tracks)
 
         return {"": 0}
