@@ -1151,11 +1151,16 @@ class SupervisedPointPrediction(task.Task):
         logging.info("resize video to (%s, %s)", resize_height, resize_width)
         video = media.resize_video(video, (resize_height, resize_width))
         video = video.astype(np.float32) / 255 * 2 - 1
-        # query_points = _sample_random_points(
-        #    num_frames, resize_height, resize_width, num_points
-        # )
-        # query_points = _sample_mask_points(input_video_path, track_idx, num_points)
-        query_points = _load_points_from_file(input_query_path)
+
+        if input_query_path != "":
+            query_points = _load_points_from_file(input_query_path)
+        elif config.num_points == 0:
+            query_points = _sample_mask_points(input_video_path, track_idx, num_points)
+        else:
+            query_points = _sample_random_points(
+                num_frames, resize_height, resize_width, num_points
+            )
+
         num_points = query_points.shape[0]
         occluded = np.zeros((num_points, num_frames), dtype=np.float32)
         inputs = {
