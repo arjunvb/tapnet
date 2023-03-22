@@ -110,6 +110,7 @@ def get_config() -> config_dict.ConfigDict:
                     input_query_path="",
                     output_video_path="",
                     output_track_path="",
+                    output_occlusion_path="",
                     resize_height=256,  # video height resized to before inference
                     resize_width=256,  # video width resized to before inference
                     num_points=20,  # number of random points to sample

@@ -1215,4 +1215,8 @@ class SupervisedPointPrediction(task.Task):
             with open(config.output_track_path, "wb") as f:
                 np.save(f, tracks)
 
+        if config.output_occlusion_path != "":
+            with open(config.output_occlusion_path, "wb") as f:
+                np.save(f, occluded)
+
         return {"": 0}
