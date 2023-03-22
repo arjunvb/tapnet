@@ -1113,6 +1113,9 @@ class SupervisedPointPrediction(task.Task):
             pts = pts.T
             pts = pts[:, [1, 0]]
 
+            """
+            print(pts.shape)
+
             import cv2
 
             im = cv2.imread(mid_frame["rgb_path"])
@@ -1120,13 +1123,19 @@ class SupervisedPointPrediction(task.Task):
             for i in range(pts.shape[0]):
                 p = pts[i]
                 im = cv2.circle(
-                    im.copy(), (p[1], p[0]), 2, color=(0, 0, 255), thickness=-1
+                    im.copy(),
+                    (p[1], p[0]),
+                    2,
+                    color=(0, 0, 255),
+                    thickness=-1,
                 )
             cv2.imwrite(f"/data2/lyft-tracks/tracks/track{track_idx}/anchor.jpg", im)
+            """
 
             points = np.zeros((pts.shape[0], pts.shape[1] + 1))
             points[:, 1:] = pts
             points[:, 0] = mid_idx
+
             return points
 
         def _load_points_from_file(query_path):
@@ -1154,11 +1163,18 @@ class SupervisedPointPrediction(task.Task):
 
         if input_query_path != "":
             query_points = _load_points_from_file(input_query_path)
-        elif config.num_points == 0:
-            query_points = _sample_mask_points(input_video_path, track_idx, num_points)
-        else:
+        elif config.random_points:
             query_points = _sample_random_points(
-                num_frames, resize_height, resize_width, num_points
+                num_frames,
+                resize_height,
+                resize_width,
+                config.num_points,
+            )
+        else:
+            query_points = _sample_mask_points(
+                input_video_path,
+                track_idx,
+                config.num_points,
             )
 
         num_points = query_points.shape[0]

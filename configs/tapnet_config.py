@@ -113,6 +113,7 @@ def get_config() -> config_dict.ConfigDict:
                     resize_height=256,  # video height resized to before inference
                     resize_width=256,  # video width resized to before inference
                     num_points=20,  # number of random points to sample
+                    random_points=True,
                 ),
             )
         )
