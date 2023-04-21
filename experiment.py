@@ -30,6 +30,7 @@ from jaxline import experiment
 from jaxline import platform
 from jaxline import utils
 from kubric.challenges.point_tracking import dataset
+from datasets import davis_dataset
 from ml_collections import config_dict
 
 import numpy as np
@@ -258,6 +259,7 @@ class Experiment(experiment.AbstractExperiment):
         # produce a data value)
         dataset_constructors = {
             "kubric": dataset.create_point_tracking_dataset,
+            "davis": davis_dataset.create_point_tracking_dataset,
         }
         dataset_generators = {}
         for dset_name in self.config.datasets.dataset_names:
