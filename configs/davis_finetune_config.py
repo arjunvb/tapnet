@@ -27,7 +27,8 @@ def get_config() -> config_dict.ConfigDict:
     config = base_config.get_base_config()
 
     # Experiment config.
-    config.training_steps = 100000
+    # Original model trained for 100k steps, so add 10,000 training steps
+    config.training_steps = 101000
 
     # NOTE: duplicates not allowed.
     config.shared_module_names = ("tapnet_model",)
@@ -36,12 +37,13 @@ def get_config() -> config_dict.ConfigDict:
     # Note: eval modes must always start with 'eval_'.
     config.eval_modes = (
         "eval_davis_points",
-        "eval_jhmdb",
+        # "eval_jhmdb",
         "eval_robotics_points",
-        "eval_kinetics_points",
+        # "eval_kinetics_points",
+        "eval_kubric",
     )
-    config.checkpoint_dir = "/tmp/tapnet_training/"
-    config.evaluate_every = 10000
+    config.checkpoint_dir = "/tmp/tapnet_davis_finetuning/"
+    config.evaluate_every = 100
 
     config.experiment_kwargs = config_dict.ConfigDict(
         dict(
@@ -79,9 +81,11 @@ def get_config() -> config_dict.ConfigDict:
                 datasets=dict(
                     dataset_names=config.get_oneway_ref("dataset_names"),
                     davis_kwargs=dict(
-                        batch_dims=1,
+                        batch_dims=8,
                         shuffle_buffer_size=128,
                         train_size=tapnet_model.TRAIN_SIZE[1:3],
+                        video_length=24,
+                        tracks_to_sample=256,
                     )
                 ),
                 supervised_point_prediction_kwargs=dict(
@@ -96,9 +100,9 @@ def get_config() -> config_dict.ConfigDict:
                 # This is useful for getting initial values of metrics
                 # at random weights, or when debugging locally if you
                 # do not have any train job running.
-                davis_points_path="",
+                davis_points_path="/microtel/data3/tap/tapvid_davis/tapvid_davis.pkl",
                 jhmdb_path="",
-                robotics_points_path="",
+                robotics_points_path="/microtel/data3/tap/tapvid_rgb_stacking/tapvid_rgb_stacking.pkl",
                 training=dict(
                     # Note: to sweep n_training_steps, DO NOT sweep these
                     # fields directly. Instead sweep config.training_steps.
