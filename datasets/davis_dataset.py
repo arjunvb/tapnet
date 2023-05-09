@@ -1,18 +1,26 @@
-import random
 import functools
-import pickle
 from typing import Tuple, Mapping
 import numpy as np
+import numpy.typing as npt
 
 import mediapy as media
 
 import tensorflow as tf
 import tensorflow_datasets as tfds
 
+from particlesfm.particlesfm_tracker.filter import TrajectoryFilter
 
-def get_pseudolabels(path: str, name: str) -> Tuple[np.ndarray, np.ndarray]:
+
+def get_pseudolabels(
+    path: str, name: str
+) -> Tuple[npt.NDArray[np.float_], npt.NDArray[np.bool_]]:
     npzfile = np.load(f"{path}/{name}/{name}.npz")
-    return npzfile["xy"], npzfile["masks"]
+    trajectories: npt.NDArray[np.float_] = npzfile["xy"]
+    valid_mask: npt.NDArray[np.int_] = npzfile["masks"]
+    return (
+        trajectories,
+        valid_mask.squeeze().astype(bool),
+    )
 
 
 def resize_video(video: tf.Tensor, output_size: Tuple[int, int]) -> tf.Tensor:
@@ -21,61 +29,42 @@ def resize_video(video: tf.Tensor, output_size: Tuple[int, int]) -> tf.Tensor:
     # such as a jitted jax.image.resize.  It will make things faster.
     return tf.image.resize(video, output_size)
 
-
-def sample_queries_strided(
+def sample_queries_first(
     target_occluded: np.ndarray,
     target_points: np.ndarray,
-    query_stride: int = 5,
 ) -> Mapping[str, np.ndarray]:
     """Package a set of frames and tracks for use in TAPNet evaluations.
 
-    Given a set of frames and tracks with no query points, sample queries
-    strided every query_stride frames, ignoring points that are not visible
-    at the selected frames.
+    Given a set of frames and tracks with no query points, use the first
+    visible point in each track as the query.
 
     Args:
       target_occluded: Boolean occlusion flag, of shape [n_tracks, n_frames],
         where True indicates occluded.
       target_points: Position, of shape [n_tracks, n_frames, 2], where each point
         is [x,y] scaled between 0 and 1.
-      query_stride: When sampling query points, search for un-occluded points
-        every query_stride frames and convert each one into a query.
+      frames: Video tensor, of shape [n_frames, height, width, 3].  Scaled between
+        -1 and 1.
 
     Returns:
       A dict with the keys:
+        video: Video tensor of shape [1, n_frames, height, width, 3]
         query_points: Query points of shape [1, n_queries, 3] where
-          each point is [t, y, x] scaled to the range [-1, 1].
+          each point is [t, y, x] scaled to the range [-1, 1]
         target_points: Target points of shape [1, n_queries, n_frames, 2] where
-          each point is [x, y] scaled to the range [-1, 1].
-        trackgroup: Index of the original track that each query point was
-          sampled from.  This is useful for visualization.
+          each point is [x, y] scaled to the range [-1, 1]
     """
-    tracks = []
-    occs = []
-    queries = []
-    trackgroups = []
-    total = 0
-    trackgroup = np.arange(target_occluded.shape[0])
-    for i in range(0, target_occluded.shape[1], query_stride):
-        mask = target_occluded[:, i] == 0
-        query = np.stack(
-            [
-                i * np.ones(target_occluded.shape[0:1]),
-                target_points[:, i, 1],
-                target_points[:, i, 0],
-            ],
-            axis=-1,
-        )
-        queries.append(query[mask])
-        tracks.append(target_points[mask])
-        occs.append(target_occluded[mask])
-        trackgroups.append(trackgroup[mask])
-        total += np.array(np.sum(target_occluded[:, i] == 0))
+    query_points = []
+    for i in range(target_points.shape[0]):
+        index = np.where(target_occluded[i] == 0)[0][0]
+        x, y = target_points[i, index, 0], target_points[i, index, 1]
+        query_points.append(np.array([index, y, x]))  # [t, y, x]
+    query_points = np.stack(query_points, axis=0)
 
     return {
-        "query_points": np.concatenate(queries, axis=0),
-        "target_points": np.concatenate(tracks, axis=0),
-        "occluded": np.concatenate(occs, axis=0),
+        "query_points": query_points,
+        "target_points": target_points,
+        "occluded": target_occluded,
     }
 
 
@@ -87,47 +76,76 @@ def add_tracks(
     vflip=False,
     random_crop=True,
     tracks_to_sample=256,
-    sampling_stride=4,
-    max_seg_id=25,
-    max_sampled_frac=0.1,
+    video_length=24,
 ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
     # Get ParticleSfM psuedolabels
-    base_path = "/microtel/scratch/particlesfm_labels2/davis"
+    base_path = "/microtel/nfs/particlesfm_labels2/davis"
     name = video_name.numpy().decode()
-    xy, masks = get_pseudolabels(base_path, name)
+    trajectories, valid_mask = get_pseudolabels(base_path, name)
 
-    # Resize the video and segmentations to the square train size
+    # Reduce video to length video_length
+    video = video[:video_length, ...]
+    trajectories = trajectories[:, :video_length, :]
+    valid_mask = valid_mask[:, :video_length].squeeze()
+
+    # Filter for trajectories valid in the first video_length frames
+    valid_trajs = np.argwhere(np.any(valid_mask, axis=1)).squeeze()
+    trajectories = trajectories[valid_trajs, ...]
+    valid_mask = valid_mask[valid_trajs, ...]
+
+    # Compute video size ratio
+    video_size_arr = tf.shape(video)[1:3].numpy()
+    train_size_arr = np.array(train_size)
+    ratio = train_size_arr / video_size_arr[::-1]
+
+    # Resize
+    trajectories *= ratio
     video = resize_video(video, train_size)
     segmentations = resize_video(segmentations, train_size)
 
-    # We want more points that lie on an object, so we do this
-    # weighting scheme to bias towards tracks that start on an
-    # object based off its segmentation
-    first_segmentation = segmentations[0]
-    object_points = set(tuple(pt)[0:2] for pt in np.argwhere(first_segmentation == 1))
+    trajectoryFilter = TrajectoryFilter(
+        trajectory_length=5,
+        object_masks=segmentations.numpy(),
+        mask_threshold=0.5,
+        video_shape=train_size_arr,
+    )
 
-    object_mask = np.zeros((xy.shape[0],))
-    for track in range(xy.shape[0]):
-        pt = tuple(xy[track, 0, :].astype(int))[::-1]
-        if pt in object_points:
-            object_mask[track] = 1
+    filt_traj, filt_valid_mask = trajectoryFilter.filterLength(trajectories, valid_mask)
 
-    weights = np.where(object_mask == 1, 1000, 1)
+    mask_trajectories, non_mask_trajectories = trajectoryFilter.splitTrajectoryTypes(filt_traj, filt_valid_mask)
 
-    # Get target points
-    possible_points = np.arange(xy.shape[0])
-    sampled_tracks = np.array(random.choices(possible_points, weights=weights, k=tracks_to_sample))
-    target_points = xy[sampled_tracks, ...]
-    occluded = ~(masks[sampled_tracks, :, 0].astype(bool))
+    # Compute track samples
+    # Selects at most 80% of keypoints to be on an object, the rest are random
+    object_samples = int(tracks_to_sample * 0.8)
+    num_mask_samples = min(mask_trajectories.shape[0], object_samples)
+    num_non_mask_samples = tracks_to_sample - num_mask_samples
+    mask_samples = np.random.choice(mask_trajectories, num_mask_samples, replace=False)
+    non_mask_samples = np.random.choice(
+        non_mask_trajectories, num_non_mask_samples, replace=False
+    )
+    samples = np.hstack((mask_samples, non_mask_samples)).astype(int)
 
-    # Sample query points
-    ret = sample_queries_strided(occluded, target_points, sampling_stride)
+    # Samples tracks into proper format
+    target_points = filt_traj[samples]
+    occluded = ~(filt_valid_mask[samples])
+
+    # Sample query points - takes first occurence of the track
+    ret = sample_queries_first(occluded, target_points)
+
+    query_points = ret["query_points"]
+    target_points = ret["target_points"]
+    occluded = ret["occluded"]
+
+    if vflip:
+        video = video[:, ::-1, :, :]
+        target_points = target_points * np.array([1, -1])
+        query_points = query_points * np.array([1, -1, 1])
 
     return (
         video / (255.0 / 2.0) - 1.0,
-        ret["query_points"],
-        ret["target_points"],
-        ret["occluded"],
+        query_points,
+        target_points,
+        occluded,
     )
 
 
@@ -140,9 +158,7 @@ def create_point_tracking_dataset(
     vflip=False,
     random_crop=True,
     tracks_to_sample=256,
-    sampling_stride=4,
-    max_seg_id=25,
-    max_sampled_frac=0.1,
+    video_length=24,
     num_parallel_point_extraction_calls=16,
     **kwargs,
 ):
@@ -175,13 +191,18 @@ def create_point_tracking_dataset(
     ds: tf.data.Dataset = tfds.load(
         "davis/480p",
         split=split,
-        data_dir="/microtel/scratch/davis/",
+        data_dir="/microtel/nfs/datasets/davis/",
         shuffle_files=shuffle_buffer_size is not None,
         **kwargs,
     )
 
     if repeat:
         ds = ds.repeat()
+
+    def remove_short_videos(data):
+        return tf.math.greater_equal(tf.shape(data["video"]["frames"])[0], video_length)
+
+    ds = ds.filter(remove_short_videos)
 
     # Workaround to load trajectories out of file storage
     ds = ds.map(
@@ -192,9 +213,7 @@ def create_point_tracking_dataset(
                 vflip=vflip,
                 random_crop=random_crop,
                 tracks_to_sample=tracks_to_sample,
-                sampling_stride=sampling_stride,
-                max_seg_id=max_seg_id,
-                max_sampled_frac=max_sampled_frac,
+                video_length=video_length
             ),
             [
                 data["metadata"]["video_name"],
@@ -202,7 +221,8 @@ def create_point_tracking_dataset(
                 data["video"]["segmentations"],
             ],
             [tf.float32, tf.float32, tf.float32, tf.bool],
-        )
+        ),
+        num_parallel_calls=num_parallel_point_extraction_calls,
     )
 
     ds = ds.map(
@@ -211,7 +231,8 @@ def create_point_tracking_dataset(
             "target_points": target_points,
             "occluded": occluded,
             "video": video,
-        }
+        },
+        num_parallel_calls=num_parallel_point_extraction_calls,
     )
 
     if shuffle_buffer_size is not None:
@@ -225,6 +246,6 @@ def create_point_tracking_dataset(
 
 if __name__ == "__main__":
     ds = create_point_tracking_dataset(shuffle_buffer_size=None)
-    for example in ds.take(1):
-        print(example)
-
+    for example in ds:
+        pass
+        # print(example["target_points"].shape)
