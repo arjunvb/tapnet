@@ -18,6 +18,7 @@ from jaxline import base_config
 from ml_collections import config_dict
 
 from tapnet import tapnet_model
+from contrack_utils.consts import Datasets
 
 
 # We define the experiment launch config in the same file as the experiment to
@@ -27,7 +28,7 @@ def get_config() -> config_dict.ConfigDict:
     config = base_config.get_base_config()
 
     # Experiment config.
-    config.training_steps = 100005
+    config.training_steps = 100001
 
     # NOTE: duplicates not allowed.
     config.shared_module_names = ("tapnet_model",)
@@ -36,13 +37,9 @@ def get_config() -> config_dict.ConfigDict:
     # Note: eval modes must always start with 'eval_'.
     config.eval_modes = (
         "eval_davis_points",
-        # "eval_jhmdb",
-        "eval_robotics_points",
-        # "eval_kinetics_points",
-        "eval_kubric",
     )
-    config.checkpoint_dir = "/tmp/tapnet_kubric_training/"
-    config.evaluate_every = 5
+    config.checkpoint_dir = "/tmp/tapnet_eval/"
+    config.evaluate_every = 1
 
     config.experiment_kwargs = config_dict.ConfigDict(
         dict(
@@ -53,7 +50,7 @@ def get_config() -> config_dict.ConfigDict:
                 # For other D It is also completely untested and very unlikely
                 # to work.
                 optimizer=dict(
-                    base_lr=2e-3,
+                    base_lr=1e-5,
                     max_norm=-1,  # < 0 to turn off.
                     weight_decay=1e-2,
                     schedule_type="cosine",
@@ -96,9 +93,9 @@ def get_config() -> config_dict.ConfigDict:
                 # This is useful for getting initial values of metrics
                 # at random weights, or when debugging locally if you
                 # do not have any train job running.
-                davis_points_path="/microtel/data3/tap/tapvid_davis/tapvid_davis.pkl",
+                davis_points_path=Datasets.TAPNET_DAVIS.value,
                 jhmdb_path="",
-                robotics_points_path="/microtel/data3/tap/tapvid_rgb_stacking/tapvid_rgb_stacking.pkl",
+                robotics_points_path=Datasets.TAPNET_ROBOTICS.value,
                 training=dict(
                     # Note: to sweep n_training_steps, DO NOT sweep these
                     # fields directly. Instead sweep config.training_steps.

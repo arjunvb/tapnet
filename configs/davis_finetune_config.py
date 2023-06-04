@@ -19,6 +19,8 @@ from ml_collections import config_dict
 
 from tapnet import tapnet_model
 
+from contrack_utils.consts import Datasets
+
 
 # We define the experiment launch config in the same file as the experiment to
 # keep things self-contained in a single file.
@@ -28,7 +30,7 @@ def get_config() -> config_dict.ConfigDict:
 
     # Experiment config.
     # Original model trained for 100k steps, so add 10,000 training steps
-    config.training_steps = 101000
+    config.training_steps = 105000
 
     # NOTE: duplicates not allowed.
     config.shared_module_names = ("tapnet_model",)
@@ -37,13 +39,10 @@ def get_config() -> config_dict.ConfigDict:
     # Note: eval modes must always start with 'eval_'.
     config.eval_modes = (
         "eval_davis_points",
-        # "eval_jhmdb",
-        "eval_robotics_points",
-        # "eval_kinetics_points",
-        "eval_kubric",
+        "eval_sfm_davis_points",
     )
     config.checkpoint_dir = "/tmp/tapnet_davis_finetuning/"
-    config.evaluate_every = 100
+    config.evaluate_every = 1000
 
     config.experiment_kwargs = config_dict.ConfigDict(
         dict(
@@ -54,13 +53,13 @@ def get_config() -> config_dict.ConfigDict:
                 # For other D It is also completely untested and very unlikely
                 # to work.
                 optimizer=dict(
-                    base_lr=2e-3,
+                    base_lr=1e-5,
                     max_norm=-1,  # < 0 to turn off.
-                    weight_decay=1e-2,
+                    weight_decay=1e-4,
                     schedule_type="cosine",
                     cosine_decay_kwargs=dict(
                         init_value=0.0,
-                        warmup_steps=5000,
+                        warmup_steps=100100,
                         end_value=0.0,
                     ),
                     optimizer="adam",
@@ -81,11 +80,15 @@ def get_config() -> config_dict.ConfigDict:
                 datasets=dict(
                     dataset_names=config.get_oneway_ref("dataset_names"),
                     davis_kwargs=dict(
-                        batch_dims=8,
-                        shuffle_buffer_size=128,
+                        batch_dims=1,
+                        shuffle_buffer_size=20,
                         train_size=tapnet_model.TRAIN_SIZE[1:3],
+                        data_dir="/microtel/nfs/datasets/davis/",
                         video_length=24,
-                        tracks_to_sample=256,
+                        trajectory_length=10,
+                        mask_threshold=1.0,
+                        tracks_to_sample=32,
+                        split="validation",
                     )
                 ),
                 supervised_point_prediction_kwargs=dict(
@@ -100,9 +103,9 @@ def get_config() -> config_dict.ConfigDict:
                 # This is useful for getting initial values of metrics
                 # at random weights, or when debugging locally if you
                 # do not have any train job running.
-                davis_points_path="/microtel/data3/tap/tapvid_davis/tapvid_davis.pkl",
+                davis_points_path=Datasets.TAPNET_DAVIS.value,
                 jhmdb_path="",
-                robotics_points_path="/microtel/data3/tap/tapvid_rgb_stacking/tapvid_rgb_stacking.pkl",
+                robotics_points_path=Datasets.TAPNET_ROBOTICS.value,
                 training=dict(
                     # Note: to sweep n_training_steps, DO NOT sweep these
                     # fields directly. Instead sweep config.training_steps.
