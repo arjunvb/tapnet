@@ -26,7 +26,7 @@ from typing import Iterable, Mapping, Tuple, Union
 
 from absl import logging
 
-from tapnet.kubric.challenges.point_tracking import dataset
+from .kubric.challenges.point_tracking import dataset
 import mediapy as media
 import numpy as np
 from PIL import Image
@@ -34,7 +34,9 @@ import scipy.io as sio
 import tensorflow as tf
 import tensorflow_datasets as tfds
 
-from tapnet.utils import transforms
+from .utils import transforms
+from particlesfm.particlesfm_tracker.filter import TrajectoryFilter
+from contrack_utils.consts import Datasets, GOOD_VIDEOS
 
 DatasetElement = Mapping[str, Mapping[str, Union[np.ndarray, str]]]
 
@@ -494,6 +496,49 @@ def create_davis_dataset(
             raise ValueError(f"Unknown query mode {query_mode}.")
 
         yield {"davis": converted}
+
+
+def create_sfm_davis_dataset(
+    davis_points_path: str, query_mode: str = "strided",
+) -> Iterable[DatasetElement]:
+    pickle_path = davis_points_path
+
+    with tf.io.gfile.GFile(pickle_path, "rb") as f:
+        davis_points_dataset = pickle.load(f)
+
+    for video_name in davis_points_dataset:
+        if video_name in GOOD_VIDEOS:
+            frames = davis_points_dataset[video_name]["video"]
+            frames_shape = frames.shape[1:3][::-1]
+            frames = resize_video(frames, TRAIN_SIZE[1:3])
+            frames = frames.astype(np.float32) / 255.0 * 2.0 - 1.0
+
+            # Get ParticleSfM psuedolabels
+            trajectories, valid_mask = TrajectoryFilter.load(Datasets.SFM_DAVIS.value, video_name)
+
+            # Reduce video to length video_length
+            frames = frames[:TRAIN_SIZE[0], ...]
+            trajectories = trajectories[:, :TRAIN_SIZE[0], :]
+            valid_mask = valid_mask[:, :TRAIN_SIZE[0]].squeeze()
+
+            # Filter for trajectories valid in all frames
+            valid_trajs = np.argwhere(np.all(valid_mask, axis=1)).squeeze(axis=-1)
+            samples = np.random.choice(valid_trajs, size=20, replace=False)
+            target_points = trajectories[samples, ...] * np.array([TRAIN_SIZE[2], TRAIN_SIZE[1]]) / frames_shape
+            target_occ = ~valid_mask[samples, ...]
+
+            if query_mode == "strided":
+                converted = sample_queries_strided(target_occ, target_points, frames)
+            elif query_mode == "first":
+                converted = sample_queries_first(target_occ, target_points, frames)
+            else:
+                raise ValueError(f"Unknown query mode {query_mode}.")
+
+            yield {
+                "davis": converted,
+                "name": video_name
+            }
+
 
 
 def create_rgb_stacking_dataset(
