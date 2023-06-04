@@ -1,5 +1,7 @@
+import os
 import functools
-from typing import Tuple, Mapping
+import pickle
+from typing import Tuple, Mapping, Optional
 import numpy as np
 import numpy.typing as npt
 
@@ -9,18 +11,7 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 
 from particlesfm.particlesfm_tracker.filter import TrajectoryFilter
-
-
-def get_pseudolabels(
-    path: str, name: str
-) -> Tuple[npt.NDArray[np.float_], npt.NDArray[np.bool_]]:
-    npzfile = np.load(f"{path}/{name}/{name}.npz")
-    trajectories: npt.NDArray[np.float_] = npzfile["xy"]
-    valid_mask: npt.NDArray[np.int_] = npzfile["masks"]
-    return (
-        trajectories,
-        valid_mask.squeeze().astype(bool),
-    )
+from contrack_utils.consts import Datasets, GOOD_VIDEOS
 
 
 def resize_video(video: tf.Tensor, output_size: Tuple[int, int]) -> tf.Tensor:
@@ -28,6 +19,19 @@ def resize_video(video: tf.Tensor, output_size: Tuple[int, int]) -> tf.Tensor:
     # If you have a GPU, consider replacing this with a GPU-enabled resize op,
     # such as a jitted jax.image.resize.  It will make things faster.
     return tf.image.resize(video, output_size)
+
+
+def remove_short_videos(data, video_length=24):
+    return tf.math.greater_equal(tf.shape(data["video"]["frames"])[0], video_length)
+
+
+def keep_good_videos(data, videos=tf.constant([])):
+    return tf.reduce_any(tf.equal(videos, data["metadata"]["video_name"]))
+
+
+def remove_bad_videos(data, videos=tf.constant([])):
+    return tf.logical_not(keep_good_videos(data, videos=videos))
+
 
 def sample_queries_first(
     target_occluded: np.ndarray,
@@ -68,28 +72,121 @@ def sample_queries_first(
     }
 
 
+def filter_and_sample_trajectories(
+    trajectories: npt.NDArray[np.float_],
+    valid_mask: npt.NDArray[np.bool_],
+    train_size: npt.NDArray[np.int_],
+    tracks_to_sample: int = 256,
+    length: Optional[int] = None,
+    segmentations: Optional[npt.NDArray[np.bool_]] = None,
+    mask_threshold: Optional[float] = None,
+) -> Tuple[npt.NDArray[np.float_], npt.NDArray[np.bool_]]:
+    """
+    Filters trajectories and samples them.
+
+    Args:
+        trajectories: Array of shape (n_tracks, n_frames, 2) containing trajectories
+        valid_mask: Array of shape (n_tracks, n_frames) containing valid mask for trajectories
+        train_size: Array of (height, width) containing the size of the training video
+        tracks_to_sample: Number of tracks to sample
+        length: Length of trajectories to filter for
+        segmentations: Array of shape (n_frames, height, width) containing segmentations
+        mask_threshold: Threshold for segmentations
+
+    Returns:
+        Tuple of (trajectories, valid_mask) of shape (tracks_to_sample, length, 2) and (tracks_to_sample, length)
+    """
+    if (
+        segmentations is not None
+        and mask_threshold is None
+        or segmentations is None
+        and mask_threshold is not None
+    ):
+        raise ValueError("Must provide mask_threshold if segmentations are provided")
+
+    # Initalize filter with proper parameters
+    trajectoryFilter = TrajectoryFilter(
+        trajectory_length=length,
+        object_masks=segmentations,
+        mask_threshold=mask_threshold,
+        video_shape=train_size,
+    )
+
+    # Filter for length
+    if length is not None:
+        trajectories, valid_mask = trajectoryFilter.filterLength(
+            trajectories, valid_mask
+        )
+
+    if segmentations is not None:
+        # Split into mask and non-mask trajectories
+        (
+            mask_trajectories,
+            non_mask_trajectories,
+        ) = trajectoryFilter.splitTrajectoryTypes(trajectories, valid_mask)
+
+        if non_mask_trajectories.size == 0:
+            # Sample any mask trajectory at random
+            samples = np.random.choice(
+                mask_trajectories.shape[0], tracks_to_sample, replace=False
+            )
+        elif mask_trajectories.size == 0:
+            # Sample any non-mask trajectory at random
+            samples = np.random.choice(
+                non_mask_trajectories.shape[0], tracks_to_sample, replace=False
+            )
+        else:
+            # Compute track samples
+            # Selects at most 60% of keypoints to be on an object, the rest are randomly sampled
+            object_samples = int(tracks_to_sample * 0.6)
+            num_mask_samples = min(mask_trajectories.shape[0], object_samples)
+            num_non_mask_samples = tracks_to_sample - num_mask_samples
+
+            # Sample and stack
+            mask_samples = np.random.choice(
+                mask_trajectories, num_mask_samples, replace=False
+            )
+            non_mask_samples = np.random.choice(
+                non_mask_trajectories, num_non_mask_samples, replace=False
+            )
+            samples = np.hstack((mask_samples, non_mask_samples)).astype(int)
+    else:
+        # Sample any trajectory at random
+        samples = np.random.choice(
+            trajectories.shape[0], tracks_to_sample, replace=False
+        )
+
+    # Filter using computed samples
+    return trajectories[samples], valid_mask[samples]
+
+
 def add_tracks(
     video_name: tf.Tensor,
     video: tf.Tensor,
     segmentations: tf.Tensor,
+    split="train",
     train_size: Tuple[int, int] = (256, 256),
     vflip=False,
     random_crop=True,
     tracks_to_sample=256,
     video_length=24,
+    trajectory_length=8,
+    mask_threshold=0.5,
+    pseudolabel_path=Datasets.SFM_DAVIS.value,
 ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
-    # Get ParticleSfM psuedolabels
-    base_path = "/microtel/nfs/particlesfm_labels2/davis"
     name = video_name.numpy().decode()
-    trajectories, valid_mask = get_pseudolabels(base_path, name)
+
+    # Get ParticleSfM psuedolabels
+    trajectories, valid_mask = TrajectoryFilter.load(pseudolabel_path, name)
 
     # Reduce video to length video_length
     video = video[:video_length, ...]
+    segmentations = segmentations[:video_length, ...]
     trajectories = trajectories[:, :video_length, :]
     valid_mask = valid_mask[:, :video_length].squeeze()
 
-    # Filter for trajectories valid in the first video_length frames
-    valid_trajs = np.argwhere(np.any(valid_mask, axis=1)).squeeze()
+    # Filter for trajectories valid in all frames
+    valid_trajs = np.argwhere(np.all(valid_mask, axis=1)).squeeze(axis=-1)
     trajectories = trajectories[valid_trajs, ...]
     valid_mask = valid_mask[valid_trajs, ...]
 
@@ -103,34 +200,19 @@ def add_tracks(
     video = resize_video(video, train_size)
     segmentations = resize_video(segmentations, train_size)
 
-    trajectoryFilter = TrajectoryFilter(
-        trajectory_length=5,
-        object_masks=segmentations.numpy(),
-        mask_threshold=0.5,
-        video_shape=train_size_arr,
-    )
-
-    filt_traj, filt_valid_mask = trajectoryFilter.filterLength(trajectories, valid_mask)
-
-    mask_trajectories, non_mask_trajectories = trajectoryFilter.splitTrajectoryTypes(filt_traj, filt_valid_mask)
-
-    # Compute track samples
-    # Selects at most 80% of keypoints to be on an object, the rest are random
-    object_samples = int(tracks_to_sample * 0.8)
-    num_mask_samples = min(mask_trajectories.shape[0], object_samples)
-    num_non_mask_samples = tracks_to_sample - num_mask_samples
-    mask_samples = np.random.choice(mask_trajectories, num_mask_samples, replace=False)
-    non_mask_samples = np.random.choice(
-        non_mask_trajectories, num_non_mask_samples, replace=False
-    )
-    samples = np.hstack((mask_samples, non_mask_samples)).astype(int)
-
     # Samples tracks into proper format
-    target_points = filt_traj[samples]
-    occluded = ~(filt_valid_mask[samples])
+    trajectories, valid_mask = filter_and_sample_trajectories(
+        trajectories,
+        valid_mask,
+        train_size_arr,
+        tracks_to_sample,
+        trajectory_length,
+        segmentations.numpy(),
+        mask_threshold,
+    )
 
     # Sample query points - takes first occurence of the track
-    ret = sample_queries_first(occluded, target_points)
+    ret = sample_queries_first(~valid_mask, trajectories)
 
     query_points = ret["query_points"]
     target_points = ret["target_points"]
@@ -149,6 +231,43 @@ def add_tracks(
     )
 
 
+def add_gt_tracks(
+    video_name: tf.Tensor,
+    gt_dataset: dict,
+    split="validation",
+    train_size: Tuple[int, int] = (256, 256),
+    video_length: int = 24,
+) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+    assert split == "validation"
+    train_array = np.array(train_size)
+
+    data = gt_dataset[video_name.numpy().decode()]
+    video = data["video"]
+    video = resize_video(video, train_size)
+    occluded = data["occluded"]
+    target_points = data["points"]
+
+    video = video[:video_length, ...]
+    target_points = target_points[:, :video_length, :]
+    occluded = occluded[:, :video_length]
+
+    valid_trajs = np.argwhere(np.any(~occluded, axis=-1)).squeeze(axis=-1)
+    samples = np.random.choice(valid_trajs, size=5, replace=False)
+    target_points = target_points[samples]
+    occluded = occluded[samples]
+
+    target_points *= train_array
+
+    ret = sample_queries_first(occluded, target_points)
+
+    return (
+        video / (255.0 / 2.0) - 1.0,
+        ret["query_points"],
+        ret["target_points"],
+        ret["occluded"],
+    )
+
+
 def create_point_tracking_dataset(
     train_size=(256, 256),
     shuffle_buffer_size=256,
@@ -159,6 +278,11 @@ def create_point_tracking_dataset(
     random_crop=True,
     tracks_to_sample=256,
     video_length=24,
+    trajectory_length=8,
+    mask_threshold=0.5,
+    data_dir=Datasets.DAVIS.value,
+    pseudolabel_path=Datasets.SFM_DAVIS.value,
+    gt=False,
     num_parallel_point_extraction_calls=16,
     **kwargs,
 ):
@@ -191,7 +315,7 @@ def create_point_tracking_dataset(
     ds: tf.data.Dataset = tfds.load(
         "davis/480p",
         split=split,
-        data_dir="/microtel/nfs/datasets/davis/",
+        data_dir=data_dir,
         shuffle_files=shuffle_buffer_size is not None,
         **kwargs,
     )
@@ -199,31 +323,63 @@ def create_point_tracking_dataset(
     if repeat:
         ds = ds.repeat()
 
-    def remove_short_videos(data):
-        return tf.math.greater_equal(tf.shape(data["video"]["frames"])[0], video_length)
-
-    ds = ds.filter(remove_short_videos)
-
-    # Workaround to load trajectories out of file storage
-    ds = ds.map(
-        lambda data: tf.py_function(
-            functools.partial(
-                add_tracks,
-                train_size=train_size,
-                vflip=vflip,
-                random_crop=random_crop,
-                tracks_to_sample=tracks_to_sample,
-                video_length=video_length
-            ),
-            [
-                data["metadata"]["video_name"],
-                data["video"]["frames"],
-                data["video"]["segmentations"],
-            ],
-            [tf.float32, tf.float32, tf.float32, tf.bool],
-        ),
-        num_parallel_calls=num_parallel_point_extraction_calls,
+    ds = ds.filter(
+        functools.partial(
+            remove_short_videos,
+            video_length=video_length,
+        )
     )
+
+    if gt:
+        with open(Datasets.TAPNET_DAVIS.value, "rb") as f:
+            gt_dataset = pickle.load(f)
+
+        ds = ds.map(
+            lambda data: tf.py_function(
+                functools.partial(
+                    add_gt_tracks,
+                    gt_dataset=gt_dataset,
+                    split=split,
+                    train_size=train_size,
+                    video_length=video_length,
+                ),
+                [data["metadata"]["video_name"]],
+                [tf.float32, tf.float32, tf.float32, tf.bool],
+            ),
+            num_parallel_calls=num_parallel_point_extraction_calls,
+        )
+    else:
+        ds = ds.filter(
+            functools.partial(
+                keep_good_videos,
+                videos=tf.constant(GOOD_VIDEOS),
+            )
+        )
+
+        # Workaround to load trajectories out of file storage
+        ds = ds.map(
+            lambda data: tf.py_function(
+                functools.partial(
+                    add_tracks,
+                    split=split,
+                    train_size=train_size,
+                    vflip=vflip,
+                    random_crop=random_crop,
+                    tracks_to_sample=tracks_to_sample,
+                    video_length=video_length,
+                    trajectory_length=trajectory_length,
+                    mask_threshold=mask_threshold,
+                    pseudolabel_path=pseudolabel_path,
+                ),
+                [
+                    data["metadata"]["video_name"],
+                    data["video"]["frames"],
+                    data["video"]["segmentations"],
+                ],
+                [tf.float32, tf.float32, tf.float32, tf.bool],
+            ),
+            num_parallel_calls=num_parallel_point_extraction_calls,
+        )
 
     ds = ds.map(
         lambda video, query_points, target_points, occluded: {
