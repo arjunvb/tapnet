@@ -834,6 +834,10 @@ class SupervisedPointPrediction(task.Task):
             yield from evaluation_datasets.create_davis_dataset(
                 self.config.davis_points_path, query_mode=query_mode
             )
+        elif "eval_sfm_davis_points" in mode:
+            yield from evaluation_datasets.create_sfm_davis_dataset(
+                self.config.davis_points_path, query_mode=query_mode
+            )
         elif "eval_jhmdb" in mode:
             yield from evaluation_datasets.create_jhmdb_dataset(self.config.jhmdb_path)
         elif "eval_robotics_points" in mode:
@@ -984,7 +988,7 @@ class SupervisedPointPrediction(task.Task):
 
         if "eval_jhmdb" in mode:
             input_key = "jhmdb"
-        elif "eval_davis_points" in mode:
+        elif "eval_davis_points" in mode or "eval_sfm_davis_points" in mode:
             input_key = "davis"
         elif "eval_robotics_points" in mode:
             input_key = "robotics"
@@ -1014,7 +1018,7 @@ class SupervisedPointPrediction(task.Task):
             )
 
             write_viz = batch_id < 10
-            if "eval_davis_points" in mode or "eval_robotics_points" in mode:
+            if "eval_davis_points" in mode or "eval_sfm_davis_points" in mode or "eval_robotics_points" in mode:
                 # Only write videos sometimes for the small datasets; otherwise
                 # there will be a crazy number of videos dumped.
                 write_viz = write_viz and (global_step % 10 == 0)
