@@ -40,7 +40,7 @@ def get_config() -> config_dict.ConfigDict:
     config.eval_modes = (
         "eval_davis_points",
         "eval_sfm_davis_points",
-        # "eval_davis_split_points",
+        "eval_davis_split_points",
     )
     config.checkpoint_dir = "/tmp/tapnet_training/"
     config.evaluate_every = 200
@@ -90,7 +90,7 @@ def get_config() -> config_dict.ConfigDict:
                         mask_threshold=1.0,
                         tracks_to_sample=32,
                         split="train",
-                        full_length=True,
+                        full_length=False,
                     )
                 ),
                 supervised_point_prediction_kwargs=dict(
