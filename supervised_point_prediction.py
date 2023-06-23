@@ -838,6 +838,14 @@ class SupervisedPointPrediction(task.Task):
             yield from evaluation_datasets.create_sfm_davis_dataset(
                 self.config.davis_points_path, query_mode=query_mode
             )
+        elif "eval_sfm_all_davis_points" in mode:
+            yield from evaluation_datasets.create_sfm_all_davis_dataset(
+                self.config.davis_points_path, query_mode=query_mode
+            )
+        elif "eval_davis_split_points" in mode:
+            yield from evaluation_datasets.create_davis_split_dataset(
+                self.config.davis_points_path, query_mode=query_mode
+            )
         elif "eval_jhmdb" in mode:
             yield from evaluation_datasets.create_jhmdb_dataset(self.config.jhmdb_path)
         elif "eval_robotics_points" in mode:
@@ -988,7 +996,10 @@ class SupervisedPointPrediction(task.Task):
 
         if "eval_jhmdb" in mode:
             input_key = "jhmdb"
-        elif "eval_davis_points" in mode or "eval_sfm_davis_points" in mode:
+        elif any(
+            "eval_" + points in mode 
+            for points in ["davis_points", "sfm_davis_points", "davis_split_points", "sfm_all_davis_points"]
+        ):
             input_key = "davis"
         elif "eval_robotics_points" in mode:
             input_key = "robotics"
@@ -1018,7 +1029,10 @@ class SupervisedPointPrediction(task.Task):
             )
 
             write_viz = batch_id < 10
-            if "eval_davis_points" in mode or "eval_sfm_davis_points" in mode or "eval_robotics_points" in mode:
+            if any(
+                "eval_" + points in mode
+                for points in ["davis_points", "sfm_davis_points", "davis_split_points", "robotics_points", "sfm_all_davis_points"]
+            ):
                 # Only write videos sometimes for the small datasets; otherwise
                 # there will be a crazy number of videos dumped.
                 write_viz = write_viz and (global_step % 10 == 0)
@@ -1154,9 +1168,9 @@ class SupervisedPointPrediction(task.Task):
         resize_height, resize_width = config.resize_height, config.resize_width
         # num_points = config.num_points
 
-        track_idx = int(
-            input_video_path.split("tracks/")[2].split("/")[0].split("track")[1]
-        )
+        # track_idx = int(
+        #     input_video_path.split("tracks/")[2].split("/")[0].split("track")[1]
+        # )
 
         logging.info("load video from %s", input_video_path)
         video = media.read_video(input_video_path)

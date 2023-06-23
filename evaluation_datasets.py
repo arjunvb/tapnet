@@ -498,6 +498,75 @@ def create_davis_dataset(
         yield {"davis": converted}
 
 
+def create_davis_split_dataset(
+    davis_points_path: str, query_mode: str = "strided"
+) -> Iterable[DatasetElement]:
+    pickle_path = davis_points_path
+
+    with tf.io.gfile.GFile(pickle_path, "rb") as f:
+        davis_points_dataset = pickle.load(f)
+
+    # Need to split labels into distinct trajectories
+    for video_name in davis_points_dataset:
+        frames = davis_points_dataset[video_name]["video"]
+        frames = media.resize_video(frames, TRAIN_SIZE[1:3])
+        frames = frames.astype(np.float32) / 255.0 * 2.0 - 1.0
+        points = davis_points_dataset[video_name]["points"]
+        occ = davis_points_dataset[video_name]["occluded"]
+        points *= np.array([TRAIN_SIZE[2], TRAIN_SIZE[1]])
+
+        target_points = []
+        target_occ = []
+
+        length = points.shape[1]
+        valid = ~occ
+        for k in range(points.shape[0]):
+            # trajectory is valid for whole frame - keep it
+            if np.all(valid[k, :]):
+                target_points.append(points[k, ...])
+                target_occ.append(occ[k, ...])
+                continue
+            
+            # Split trajectory into valid segments
+            indices = np.flatnonzero(valid[k, 1:] != valid[k, :-1]) + 1
+            new_trajectories = np.split(points[k, ...], indices, axis=0)
+
+            if np.all(new_trajectories[0] == 0.0):
+                indices = indices[1::2]
+                new_trajectories = new_trajectories[1::2]
+            else:
+                indices = indices[::2]
+                new_trajectories = new_trajectories[::2]
+
+            # Fix for case when trajectory is valid at the end
+            if indices.shape[0] == len(new_trajectories) - 1:
+                indices = np.concatenate([indices, [length]])
+
+            # Build new trajectories out of valid segments
+            for idx, traj in zip(indices, new_trajectories):
+                traj_length = traj.shape[0]
+                new_traj = np.full((length, 2), 0.0, dtype=np.float32)
+                new_occ = np.full((length,), True, dtype=bool)
+                new_traj[idx - traj_length:idx, :] = traj
+                new_occ[idx - traj_length:idx] = False
+
+                target_points.append(new_traj)
+                target_occ.append(new_occ)
+
+        # Concatenate trajectories
+        target_points = np.stack(target_points, axis=0)
+        target_occ = np.stack(target_occ, axis=0)
+
+        if query_mode == "strided":
+            converted = sample_queries_strided(target_occ, target_points, frames)
+        elif query_mode == "first":
+            converted = sample_queries_first(target_occ, target_points, frames)
+        else:
+            raise ValueError(f"Unknown query mode {query_mode}.")
+
+        yield {"davis": converted}
+
+
 def create_sfm_davis_dataset(
     davis_points_path: str, query_mode: str = "strided",
 ) -> Iterable[DatasetElement]:
@@ -539,6 +608,47 @@ def create_sfm_davis_dataset(
                 "name": video_name
             }
 
+
+def create_sfm_all_davis_dataset(
+    davis_points_path: str, query_mode: str = "strided",
+) -> Iterable[DatasetElement]:
+    pickle_path = davis_points_path
+
+    with tf.io.gfile.GFile(pickle_path, "rb") as f:
+        davis_points_dataset = pickle.load(f)
+
+    for video_name in davis_points_dataset:
+        if video_name in GOOD_VIDEOS:
+            frames = davis_points_dataset[video_name]["video"]
+            frames_shape = frames.shape[1:3][::-1]
+            frames = resize_video(frames, TRAIN_SIZE[1:3])
+            frames = frames.astype(np.float32) / 255.0 * 2.0 - 1.0
+
+            # Get ParticleSfM psuedolabels
+            trajectories, valid_mask = TrajectoryFilter.load(Datasets.SFM_DAVIS.value, video_name)
+
+            # Reduce video to length video_length
+            frames = frames[:TRAIN_SIZE[0], ...]
+            trajectories = trajectories[:, :TRAIN_SIZE[0], :]
+            valid_mask = valid_mask[:, :TRAIN_SIZE[0]].squeeze()
+
+            # Filter for trajectories valid in all frames
+            # valid_trajs = np.argwhere(np.all(valid_mask, axis=1)).squeeze(axis=-1)
+            samples = np.random.choice(trajectories.shape[0], size=1000, replace=False)
+            target_points = trajectories[samples, ...] * np.array([TRAIN_SIZE[2], TRAIN_SIZE[1]]) / frames_shape
+            target_occ = ~valid_mask[samples, ...]
+
+            if query_mode == "strided":
+                converted = sample_queries_strided(target_occ, target_points, frames)
+            elif query_mode == "first":
+                converted = sample_queries_first(target_occ, target_points, frames)
+            else:
+                raise ValueError(f"Unknown query mode {query_mode}.")
+
+            yield {
+                "davis": converted,
+                "name": video_name
+            }
 
 
 def create_rgb_stacking_dataset(
@@ -610,3 +720,45 @@ def create_kinetics_dataset(
                 raise ValueError(f"Unknown query mode {query_mode}.")
 
             yield {"kinetics": converted}
+
+
+def create_lyft_dataset(
+    lyft_path: str, query_mode: str = "strided"
+) -> Iterable[DatasetElement]:
+    """Dataset for evaluating performance on Lyft point tracking."""
+    paths = tf.io.gfile.glob(os.path.join(lyft_path, "tracks/track_*.pkl"))
+    for path in paths:
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+
+        track_idx = path.split("/")[-1].split(".")[0].split("_")[-1]
+        track_name = f"track_{track_idx:0>5}"
+        frames = np.stack(media.read_image(track["rgb_path"]) for track in data["track_frames"])
+        frames_shape = frames.shape[1:3][::-1]
+        frames = resize_video(frames, TRAIN_SIZE[1:3])
+        frames = frames.astype(np.float32) / 255.0 * 2.0 - 1.0
+
+        # Get ParticleSfM psuedolabels
+        trajectories, valid_mask = TrajectoryFilter.load(Datasets.SFM_LYFT.value, track_name)
+
+        # Reduce video to length video_length
+        frames = frames[:TRAIN_SIZE[0], ...]
+        trajectories = trajectories[:, :TRAIN_SIZE[0], :]
+        valid_mask = valid_mask[:, :TRAIN_SIZE[0]].squeeze()
+
+        # Filter for trajectories valid in all frames
+        valid_trajs = np.argwhere(np.all(valid_mask, axis=1)).squeeze(axis=-1)
+        samples = np.random.choice(valid_trajs, size=1000, replace=False)
+        target_points = trajectories[samples, ...] * np.array([TRAIN_SIZE[2], TRAIN_SIZE[1]]) / frames_shape
+        target_occ = ~valid_mask[samples, ...]
+
+        if query_mode == "strided":
+            converted = sample_queries_strided(target_occ, target_points, frames)
+        elif query_mode == "first":
+            converted = sample_queries_first(target_occ, target_points, frames)
+        else:
+            raise ValueError(f"Unknown query mode {query_mode}.")
+
+        yield {"lyft": converted}
+
+    
