@@ -39,6 +39,7 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 
 from tapnet import supervised_point_prediction
+from tapnet import tapir_model
 from tapnet import tapnet_model
 from tapnet import task
 from tapnet.utils import experiment_utils as exputils
@@ -114,8 +115,10 @@ class Experiment(experiment.AbstractExperiment):
         self._train_input = None
         self._eval_input = None
 
-        self.point_prediction = supervised_point_prediction.SupervisedPointPrediction(
-            config, **config.supervised_point_prediction_kwargs
+        self.point_prediction = (
+            supervised_point_prediction.SupervisedPointPrediction(
+                config, **config.supervised_point_prediction_kwargs
+            )
         )
 
         def forward(*args, is_training=True, **kwargs):
@@ -148,6 +151,7 @@ class Experiment(experiment.AbstractExperiment):
         """
         shared_module_constructors = {
             "tapnet_model": tapnet_model.TAPNet,
+            "tapir_model": tapir_model.TAPIR,
         }
         shared_modules = {}
 
@@ -163,7 +167,7 @@ class Experiment(experiment.AbstractExperiment):
     # | |_| | | (_| | | | | |
     #  \__|_|  \__,_|_|_| |_|
     #
-    def step(
+    def step(  # pytype: disable=signature-mismatch  # numpy-scalars
         self,
         global_step: chex.Array,
         rng: chex.PRNGKey,
@@ -372,9 +376,9 @@ class Experiment(experiment.AbstractExperiment):
         params = optax.apply_updates(params, updates)
 
         n_params = 0
-        for k in params.keys():
+        for k in params.keys():  # pytype: disable=attribute-error # numpy-scalars
             for l in params[k]:
-                n_params = n_params + np.prod(params[k][l].shape)
+                n_params = n_params + np.prod(params[k][l].shape)  # pytype: disable=attribute-error # numpy-scalars
 
         # Scalars to log (note: we log the mean across all hosts/devices).
         scalars.update(
@@ -393,7 +397,7 @@ class Experiment(experiment.AbstractExperiment):
     # |  __/\ V / (_| | |
     #  \___| \_/ \__,_|_|
     #
-    def evaluate(
+    def evaluate(  # pytype: disable=signature-mismatch # numpy-scalars
         self,
         global_step: chex.Array,
         rng: chex.PRNGKey,

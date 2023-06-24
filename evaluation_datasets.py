@@ -416,7 +416,7 @@ def create_jhmdb_dataset(jhmdb_path: str) -> Iterable[DatasetElement]:
             # sequence (usually because the person disappears).  In this case,
             # truncate the video.
             logging.warning("short video!!")
-            frames = frames[: gt_pose.shape[1]]
+            frames = frames[:gt_pose.shape[1]]
 
         converted = {
             "video": frames[np.newaxis, ...],
@@ -472,7 +472,7 @@ def create_kubric_eval_dataset(mode: str) -> Iterable[DatasetElement]:
 
 
 def create_davis_dataset(
-    davis_points_path: str, query_mode: str = "strided"
+    davis_points_path: str, query_mode: str = "strided", full_resolution=False
 ) -> Iterable[DatasetElement]:
     """Dataset for evaluating performance on DAVIS data."""
     pickle_path = davis_points_path
@@ -480,13 +480,31 @@ def create_davis_dataset(
     with tf.io.gfile.GFile(pickle_path, "rb") as f:
         davis_points_dataset = pickle.load(f)
 
-    for video_name in davis_points_dataset:
-        frames = davis_points_dataset[video_name]["video"]
-        frames = resize_video(frames, TRAIN_SIZE[1:3])
+    if full_resolution:
+        ds, _ = tfds.load(
+            'davis/full_resolution', split='validation', with_info=True
+        )
+        to_iterate = tfds.as_numpy(ds)
+    else:
+        to_iterate = davis_points_dataset.keys()
+
+    for tmp in to_iterate:
+        if full_resolution:
+            frames = tmp['video']['frames']
+            video_name = tmp['metadata']['video_name'].decode()
+        else:
+            video_name = tmp
+            frames = davis_points_dataset[video_name]['video']
+            frames = resize_video(frames, TRAIN_SIZE[1:3])
+
         frames = frames.astype(np.float32) / 255.0 * 2.0 - 1.0
         target_points = davis_points_dataset[video_name]["points"]
         target_occ = davis_points_dataset[video_name]["occluded"]
-        target_points *= np.array([TRAIN_SIZE[2], TRAIN_SIZE[1]])
+        target_points = transforms.convert_grid_coordinates(
+            target_points,
+            np.array([1.0, 1.0]),
+            np.array([frames.shape[-2], frames.shape[-3]]),
+        )
 
         if query_mode == "strided":
             converted = sample_queries_strided(target_occ, target_points, frames)
