@@ -674,6 +674,24 @@ class SupervisedPointPrediction(task.Task):
       yield from evaluation_datasets.create_davis_dataset(
           self.config.davis_points_path, query_mode=query_mode
       )
+    elif 'eval_sfm_davis_points' in mode:
+      yield from evaluation_datasets.create_sfm_davis_dataset(
+        self.config.davis_points_path,
+        self.config.davis_sfm_path,
+        query_mode=query_mode,
+        full_length=self.config.eval_kwargs.full_length,
+        num_samples=self.config.eval_kwargs.num_samples,
+        video_length=self.config.eval_kwargs.video_length,
+      )
+    elif 'eval_sfm_lyft_points' in mode:
+      yield from evaluation_datasets.create_sfm_lyft_dataset(
+        self.config.lyft_points_path,
+        self.config.lyft_sfm_path,
+        query_mode=query_mode,
+        full_length=self.config.eval_kwargs.full_length,
+        num_samples=self.config.eval_kwargs.num_samples,
+        video_length=self.config.eval_kwargs.video_length,
+      )
     elif 'eval_jhmdb' in mode:
       yield from evaluation_datasets.create_jhmdb_dataset(
           self.config.jhmdb_path
@@ -817,12 +835,14 @@ class SupervisedPointPrediction(task.Task):
 
     if 'eval_jhmdb' in mode:
       input_key = 'jhmdb'
-    elif 'eval_davis_points' in mode:
+    elif 'eval_davis_points' in mode or 'eval_sfm_davis_points' in mode:
       input_key = 'davis'
     elif 'eval_robotics_points' in mode:
       input_key = 'robotics'
     elif 'eval_kinetics_points' in mode:
       input_key = 'kinetics'
+    elif 'eval_sfm_lyft_points' in mode:
+      input_key = 'lyft'
     else:
       input_key = 'kubric'
     eval_batch_fn = functools.partial(
@@ -836,7 +856,12 @@ class SupervisedPointPrediction(task.Task):
       num_samples += batch_size
       scalars, viz = eval_batch_fn(params, state, inputs, rng)
       write_viz = batch_id < 0
-      if 'eval_davis_points' in mode or 'eval_robotics_points' in mode:
+      if (
+        'eval_davis_points' in mode
+        or 'eval_sfm_davis_points' in mode
+        or 'eval_robotics_points' in mode
+        or 'eval_sfm_lyft_points' in mode
+      ):
         # Only write videos sometimes for the small datasets; otherwise
         # there will be a crazy number of videos dumped.
         write_viz = write_viz and (global_step % 10 == 0)
