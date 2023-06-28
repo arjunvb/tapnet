@@ -31,7 +31,7 @@ def get_config() -> config_dict.ConfigDict:
     config.training_steps = 100000
 
     # NOTE: duplicates not allowed.
-    config.shared_module_names = ("tapnet_model",)
+    config.shared_module_names = ("tapir_model",)
 
     config.dataset_names = ()
     # Note: eval modes must always start with 'eval_'.
@@ -70,13 +70,17 @@ def get_config() -> config_dict.ConfigDict:
                     shared_module_names=config.get_oneway_ref(
                         "shared_module_names",
                     ),
-                    tapnet_model_kwargs=dict(),
+                    tapir_model_kwargs=dict(
+                        bilinear_interp_with_depthwise_conv=True,
+                        use_causal_conv=False,
+                    ),
                 ),
                 datasets=dict(
                     dataset_names=config.get_oneway_ref("dataset_names"),
                 ),
                 supervised_point_prediction_kwargs=dict(
                     prediction_algo="cost_volume_regressor",
+                    model_key="tapir_model",
                 ),
                 checkpoint_dir=config.get_oneway_ref("checkpoint_dir"),
                 evaluate_every=config.get_oneway_ref("evaluate_every"),
@@ -93,7 +97,7 @@ def get_config() -> config_dict.ConfigDict:
                 eval_kwargs=dict(
                     video_length=24,
                     full_length=True,
-                    num_samples=256,
+                    num_samples=20,
                 ),
                 training=dict(
                     # Note: to sweep n_training_steps, DO NOT sweep these
