@@ -659,8 +659,9 @@ def __create_sfm_dataset(
     sfm_path: str,
     query_mode: str = "strided",
     num_samples: int = 256,
-    full_length: bool = False,
+    full_video: bool = False,
     video_length: Optional[int] = None,
+    trajectory_length: Optional[int] = None,
 ):
     for video_name in ds:
         frames = ds[video_name]
@@ -672,14 +673,17 @@ def __create_sfm_dataset(
         # Get ParticleSfM psuedolabels
         trajectories = Trajectories.load(sfm_path, video_name, frames_shape)
 
-        # Reduce video to length video_length
+        # Reduce video to length video_length - need to do this first 
+        # since this affects the trajectory length
         if video_length is not None:
             frames = frames[:video_length, ...]
             trajectories = trajectories.sliceFrames(video_length)
 
         # Filter for trajectories valid in all frames
-        if full_length:
+        if full_video:
             trajectories = trajectories.filterFullVideo()
+        elif trajectory_length is not None:
+            trajectories = trajectories.filterLength(trajectory_length)
 
         sampled_trajectories = trajectories.sample(num_samples)
         final_resized_trajectories = sampled_trajectories.resize([TRAIN_SIZE[2], TRAIN_SIZE[1]])
@@ -700,9 +704,7 @@ def create_sfm_davis_dataset(
     davis_points_path: str,
     davis_sfm_path: str,
     query_mode: str = "strided",
-    num_samples: int = 256,
-    full_length: bool = False,
-    video_length: Optional[int] = None,
+    **kwargs,
 ) -> Iterable[DatasetElement]:
     pickle_path = davis_points_path
 
@@ -719,9 +721,7 @@ def create_sfm_davis_dataset(
         ds,
         davis_sfm_path,
         query_mode=query_mode,
-        num_samples=num_samples,
-        full_length=full_length,
-        video_length=video_length,
+        **kwargs,
     )
 
     for converted in sfm_ds:
@@ -732,8 +732,7 @@ def create_sfm_lyft_dataset(
     lyft_path: str, 
     lyft_sfm_path: str,
     query_mode: str = "strided",
-    num_samples: int = 256,
-    full_length: bool = False
+    **kwargs,
 ) -> Iterable[DatasetElement]:
     """Dataset for evaluating performance on Lyft point tracking."""
     paths = tf.io.gfile.glob(os.path.join(lyft_path, "tracks/track_*.pkl"))
@@ -756,8 +755,7 @@ def create_sfm_lyft_dataset(
         ds,
         lyft_sfm_path,
         query_mode=query_mode,
-        num_samples=num_samples,
-        full_length=full_length
+        **kwargs,
     )
 
     for converted in sfm_ds:

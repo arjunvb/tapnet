@@ -679,18 +679,14 @@ class SupervisedPointPrediction(task.Task):
         self.config.davis_points_path,
         self.config.davis_sfm_path,
         query_mode=query_mode,
-        full_length=self.config.eval_kwargs.full_length,
-        num_samples=self.config.eval_kwargs.num_samples,
-        video_length=self.config.eval_kwargs.video_length,
+        **self.config.eval_kwargs,
       )
     elif 'eval_sfm_lyft_points' in mode:
       yield from evaluation_datasets.create_sfm_lyft_dataset(
         self.config.lyft_points_path,
         self.config.lyft_sfm_path,
         query_mode=query_mode,
-        full_length=self.config.eval_kwargs.full_length,
-        num_samples=self.config.eval_kwargs.num_samples,
-        video_length=self.config.eval_kwargs.video_length,
+        **self.config.eval_kwargs,
       )
     elif 'eval_jhmdb' in mode:
       yield from evaluation_datasets.create_jhmdb_dataset(
