@@ -18,7 +18,6 @@ from jaxline import base_config
 from ml_collections import config_dict
 
 from tapnet import tapnet_model
-
 from contrack_utils.consts import Datasets
 
 
@@ -29,21 +28,16 @@ def get_config() -> config_dict.ConfigDict:
     config = base_config.get_base_config()
 
     # Experiment config.
-    # Original model trained for 100k steps, so add 10,000 training steps
-    config.training_steps = 102000
+    config.training_steps = 100000
 
     # NOTE: duplicates not allowed.
-    config.shared_module_names = ("tapnet_model",)
+    config.shared_module_names = ("tapir_model",)
 
-    config.dataset_names = ("davis",)
+    config.dataset_names = ()
     # Note: eval modes must always start with 'eval_'.
-    config.eval_modes = (
-        "eval_davis_points",
-        "eval_sfm_davis_points",
-        # "eval_davis_split_points",
-    )
+    config.eval_modes = ()
     config.checkpoint_dir = "/tmp/tapnet_training/"
-    config.evaluate_every = 200
+    config.evaluate_every = 10000
 
     config.experiment_kwargs = config_dict.ConfigDict(
         dict(
@@ -56,11 +50,11 @@ def get_config() -> config_dict.ConfigDict:
                 optimizer=dict(
                     base_lr=1e-5,
                     max_norm=-1,  # < 0 to turn off.
-                    weight_decay=1e-4,
+                    weight_decay=1e-2,
                     schedule_type="cosine",
                     cosine_decay_kwargs=dict(
                         init_value=0.0,
-                        warmup_steps=100100,
+                        warmup_steps=5000,
                         end_value=0.0,
                     ),
                     optimizer="adam",
@@ -76,26 +70,17 @@ def get_config() -> config_dict.ConfigDict:
                     shared_module_names=config.get_oneway_ref(
                         "shared_module_names",
                     ),
-                    tapnet_model_kwargs=dict(),
+                    tapir_model_kwargs=dict(
+                        bilinear_interp_with_depthwise_conv=True,
+                        use_causal_conv=False,
+                    ),
                 ),
                 datasets=dict(
                     dataset_names=config.get_oneway_ref("dataset_names"),
-                    davis_kwargs=dict(
-                        batch_dims=8,
-                        shuffle_buffer_size=20,
-                        train_size=tapnet_model.TRAIN_SIZE[1:3],
-                        data_dir="/microtel/nfs/datasets/davis/",
-                        video_length=24,
-                        trajectory_length=5,
-                        mask_threshold=1.0,
-                        tracks_to_sample=32,
-                        split="train",
-                        full_length=True,
-                    )
                 ),
                 supervised_point_prediction_kwargs=dict(
-                    input_key="davis",
                     prediction_algo="cost_volume_regressor",
+                    model_key="tapir_model",
                 ),
                 checkpoint_dir=config.get_oneway_ref("checkpoint_dir"),
                 evaluate_every=config.get_oneway_ref("evaluate_every"),
@@ -108,6 +93,12 @@ def get_config() -> config_dict.ConfigDict:
                 davis_points_path=Datasets.TAPNET_DAVIS.value,
                 jhmdb_path="",
                 robotics_points_path=Datasets.TAPNET_ROBOTICS.value,
+                davis_sfm_path=Datasets.SFM_DAVIS.value,
+                eval_kwargs=dict(
+                    video_length=24,
+                    full_length=True,
+                    num_samples=20,
+                ),
                 training=dict(
                     # Note: to sweep n_training_steps, DO NOT sweep these
                     # fields directly. Instead sweep config.training_steps.

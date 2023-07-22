@@ -89,7 +89,7 @@ def get_config() -> config_dict.ConfigDict:
                         trajectory_length=5,
                         mask_threshold=1.0,
                         tracks_to_sample=32,
-                        split="train",
+                        split="validation",
                         full_length=True,
                     )
                 ),

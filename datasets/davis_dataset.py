@@ -173,6 +173,7 @@ def add_tracks(
     trajectory_length=8,
     mask_threshold=0.5,
     pseudolabel_path=Datasets.SFM_DAVIS.value,
+    full_length=False,
 ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
     name = video_name.numpy().decode()
 
@@ -186,9 +187,10 @@ def add_tracks(
     valid_mask = valid_mask[:, :video_length].squeeze()
 
     # Filter for trajectories valid in all frames
-    valid_trajs = np.argwhere(np.all(valid_mask, axis=1)).squeeze(axis=-1)
-    trajectories = trajectories[valid_trajs, ...]
-    valid_mask = valid_mask[valid_trajs, ...]
+    if full_length:
+        valid_trajs = np.argwhere(np.all(valid_mask, axis=1)).squeeze(axis=-1)
+        trajectories = trajectories[valid_trajs, ...]
+        valid_mask = valid_mask[valid_trajs, ...]
 
     # Compute video size ratio
     video_size_arr = tf.shape(video)[1:3].numpy()
@@ -283,6 +285,7 @@ def create_point_tracking_dataset(
     data_dir=Datasets.DAVIS.value,
     pseudolabel_path=Datasets.SFM_DAVIS.value,
     gt=False,
+    full_length=False,
     num_parallel_point_extraction_calls=16,
     **kwargs,
 ):
@@ -370,6 +373,7 @@ def create_point_tracking_dataset(
                     trajectory_length=trajectory_length,
                     mask_threshold=mask_threshold,
                     pseudolabel_path=pseudolabel_path,
+                    full_length=full_length,
                 ),
                 [
                     data["metadata"]["video_name"],

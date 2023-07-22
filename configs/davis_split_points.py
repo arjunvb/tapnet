@@ -18,6 +18,7 @@ from jaxline import base_config
 from ml_collections import config_dict
 
 from tapnet import tapnet_model
+
 from contrack_utils.consts import Datasets
 
 
@@ -28,18 +29,21 @@ def get_config() -> config_dict.ConfigDict:
     config = base_config.get_base_config()
 
     # Experiment config.
-    config.training_steps = 100001
+    # Original model trained for 100k steps, so add 10,000 training steps
+    config.training_steps = 102000
 
     # NOTE: duplicates not allowed.
     config.shared_module_names = ("tapnet_model",)
 
-    config.dataset_names = ("kubric",)
+    config.dataset_names = ("davis",)
     # Note: eval modes must always start with 'eval_'.
     config.eval_modes = (
         "eval_davis_points",
+        "eval_sfm_davis_points",
+        "eval_davis_split_points",
     )
-    config.checkpoint_dir = "/tmp/tapnet_eval/"
-    config.evaluate_every = 1
+    config.checkpoint_dir = "/tmp/tapnet_training/"
+    config.evaluate_every = 200
 
     config.experiment_kwargs = config_dict.ConfigDict(
         dict(
@@ -52,11 +56,11 @@ def get_config() -> config_dict.ConfigDict:
                 optimizer=dict(
                     base_lr=1e-5,
                     max_norm=-1,  # < 0 to turn off.
-                    weight_decay=1e-2,
+                    weight_decay=1e-4,
                     schedule_type="cosine",
                     cosine_decay_kwargs=dict(
                         init_value=0.0,
-                        warmup_steps=5000,
+                        warmup_steps=100100,
                         end_value=0.0,
                     ),
                     optimizer="adam",
@@ -76,13 +80,21 @@ def get_config() -> config_dict.ConfigDict:
                 ),
                 datasets=dict(
                     dataset_names=config.get_oneway_ref("dataset_names"),
-                    kubric_kwargs=dict(
+                    davis_kwargs=dict(
                         batch_dims=8,
-                        shuffle_buffer_size=128,
+                        shuffle_buffer_size=20,
                         train_size=tapnet_model.TRAIN_SIZE[1:3],
-                    ),
+                        data_dir="/microtel/nfs/datasets/davis/",
+                        video_length=24,
+                        trajectory_length=5,
+                        mask_threshold=1.0,
+                        tracks_to_sample=32,
+                        split="train",
+                        full_length=False,
+                    )
                 ),
                 supervised_point_prediction_kwargs=dict(
+                    input_key="davis",
                     prediction_algo="cost_volume_regressor",
                 ),
                 checkpoint_dir=config.get_oneway_ref("checkpoint_dir"),
