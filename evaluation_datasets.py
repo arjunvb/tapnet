@@ -22,7 +22,7 @@ import os
 from os import path
 import pickle
 import random
-from typing import Iterable, Mapping, Tuple, Union, Optional
+from typing import Iterable, Mapping, Tuple, Union, Optional, List
 
 from absl import logging
 
@@ -35,8 +35,7 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 
 from .utils import transforms
-from particlesfm.particlesfm_tracker.filter import TrajectoryFilter, Trajectories
-from contrack_utils.consts import Datasets, GOOD_VIDEOS
+from particlesfm.particlesfm_tracker.filter import Trajectories
 
 DatasetElement = Mapping[str, Mapping[str, Union[np.ndarray, str]]]
 
@@ -585,82 +584,13 @@ def create_kinetics_dataset(
             yield {"kinetics": converted}
 
 
-def create_davis_split_dataset(
-    davis_points_path: str, query_mode: str = "strided"
-) -> Iterable[DatasetElement]:
-    pickle_path = davis_points_path
-
-    with tf.io.gfile.GFile(pickle_path, "rb") as f:
-        davis_points_dataset = pickle.load(f)
-
-    # Need to split labels into distinct trajectories
-    for video_name in davis_points_dataset:
-        frames = davis_points_dataset[video_name]["video"]
-        frames = media.resize_video(frames, TRAIN_SIZE[1:3])
-        frames = frames.astype(np.float32) / 255.0 * 2.0 - 1.0
-        points = davis_points_dataset[video_name]["points"]
-        occ = davis_points_dataset[video_name]["occluded"]
-        points *= np.array([TRAIN_SIZE[2], TRAIN_SIZE[1]])
-
-        target_points = []
-        target_occ = []
-
-        length = points.shape[1]
-        valid = ~occ
-        for k in range(points.shape[0]):
-            # trajectory is valid for whole frame - keep it
-            if np.all(valid[k, :]):
-                target_points.append(points[k, ...])
-                target_occ.append(occ[k, ...])
-                continue
-            
-            # Split trajectory into valid segments
-            indices = np.flatnonzero(valid[k, 1:] != valid[k, :-1]) + 1
-            new_trajectories = np.split(points[k, ...], indices, axis=0)
-
-            if np.all(new_trajectories[0] == 0.0):
-                indices = indices[1::2]
-                new_trajectories = new_trajectories[1::2]
-            else:
-                indices = indices[::2]
-                new_trajectories = new_trajectories[::2]
-
-            # Fix for case when trajectory is valid at the end
-            if indices.shape[0] == len(new_trajectories) - 1:
-                indices = np.concatenate([indices, [length]])
-
-            # Build new trajectories out of valid segments
-            for idx, traj in zip(indices, new_trajectories):
-                traj_length = traj.shape[0]
-                new_traj = np.full((length, 2), 0.0, dtype=np.float32)
-                new_occ = np.full((length,), True, dtype=bool)
-                new_traj[idx - traj_length:idx, :] = traj
-                new_occ[idx - traj_length:idx] = False
-
-                target_points.append(new_traj)
-                target_occ.append(new_occ)
-
-        # Concatenate trajectories
-        target_points = np.stack(target_points, axis=0)
-        target_occ = np.stack(target_occ, axis=0)
-
-        if query_mode == "strided":
-            converted = sample_queries_strided(target_occ, target_points, frames)
-        elif query_mode == "first":
-            converted = sample_queries_first(target_occ, target_points, frames)
-        else:
-            raise ValueError(f"Unknown query mode {query_mode}.")
-
-        yield {"davis": converted}
-
-
 def __create_sfm_dataset(
     ds: Mapping[str, np.typing.NDArray[np.float32]],
     sfm_path: str,
     query_mode: str = "strided",
     num_samples: int = 256,
     full_video: bool = False,
-    video_length: Optional[int] = None,
+    video_length: Optional[Union[int, List[int]]] = None,
     trajectory_length: Optional[int] = None,
 ):
     for video_name in ds:
@@ -676,8 +606,16 @@ def __create_sfm_dataset(
         # Reduce video to length video_length - need to do this first 
         # since this affects the trajectory length
         if video_length is not None:
-            frames = frames[:video_length, ...]
-            trajectories = trajectories.sliceFrames(video_length)
+            if isinstance(video_length, int):
+                frames = frames[:video_length, ...]
+                trajectories = trajectories.sliceFrames(video_length)
+            elif isinstance(video_length, list):
+                if len(video_length) <= 3:
+                    frames = frames[slice(*video_length), ...]
+                else:
+                    raise ValueError(f"Invalid video length! video_length must be an int or a list of 2-3 numbers.")
+
+                trajectories = trajectories.sliceFrames(*video_length)
 
         # Filter for trajectories valid in all frames
         if full_video:
@@ -685,7 +623,12 @@ def __create_sfm_dataset(
         elif trajectory_length is not None:
             trajectories = trajectories.filterLength(trajectory_length)
 
+        # Sample trajectories
         sampled_trajectories = trajectories.sample(num_samples)
+        if sampled_trajectories.num_trajectories == 0:
+            continue
+
+        # Resize trajectories to match video size
         final_resized_trajectories = sampled_trajectories.resize([TRAIN_SIZE[2], TRAIN_SIZE[1]])
         target_points, valid_mask = final_resized_trajectories.toData()
         target_occ = ~valid_mask
@@ -713,8 +656,8 @@ def create_sfm_davis_dataset(
 
     # Preprocess dataset
     ds = {
-        video_name: data["video"] for video_name, data in davis_points_dataset.items()
-        if video_name in GOOD_VIDEOS
+        video_name: data["video"]
+        for video_name, data in davis_points_dataset.items()
     }
 
     sfm_ds = __create_sfm_dataset(
