@@ -17,6 +17,9 @@
 from jaxline import base_config
 from ml_collections import config_dict
 
+from tapnet import tapir_model
+from contrack_utils.consts import Datasets
+
 
 # We define the experiment launch config in the same file as the experiment to
 # keep things self-contained in a single file.
@@ -25,21 +28,19 @@ def get_config() -> config_dict.ConfigDict:
   config = base_config.get_base_config()
 
   # Experiment config.
-  config.training_steps = 100000
+  config.training_steps = 102000
 
   # NOTE: duplicates not allowed.
   config.shared_module_names = ('tapir_model',)
 
-  config.dataset_names = ('kubric',)
+  config.dataset_names = ('davis',)
   # Note: eval modes must always start with 'eval_'.
   config.eval_modes = (
       'eval_davis_points',
-      'eval_jhmdb',
-      'eval_robotics_points',
-      'eval_kinetics_points',
+      'eval_sfm_davis_points',
   )
   config.checkpoint_dir = '/tmp/tapnet_training/'
-  config.evaluate_every = 10000
+  config.evaluate_every = 100
 
   config.experiment_kwargs = config_dict.ConfigDict(
       dict(
@@ -50,13 +51,13 @@ def get_config() -> config_dict.ConfigDict:
               # For other D It is also completely untested and very unlikely
               # to work.
               optimizer=dict(
-                  base_lr=1e-3,
+                  base_lr=1e-5,
                   max_norm=-1,  # < 0 to turn off.
-                  weight_decay=1e-1,
+                  weight_decay=1e-3,
                   schedule_type='cosine',
                   cosine_decay_kwargs=dict(
                       init_value=0.0,
-                      warmup_steps=1000,
+                      warmup_steps=100,
                       end_value=0.0,
                   ),
                   optimizer='adam',
@@ -75,18 +76,25 @@ def get_config() -> config_dict.ConfigDict:
                   tapir_model_kwargs=dict(
                       bilinear_interp_with_depthwise_conv=True,
                       use_causal_conv=False,
-                      initial_resolution=(256, 256),
                   ),
               ),
               datasets=dict(
                   dataset_names=config.get_oneway_ref('dataset_names'),
-                  kubric_kwargs=dict(
-                      batch_dims=8,
-                      shuffle_buffer_size=128,
-                      train_size=(256, 256),
-                  ),
+                  davis_kwargs=dict(
+                        batch_dims=4,
+                        shuffle_buffer_size=20,
+                        train_size=tapir_model.TRAIN_SIZE[1:3],
+                        data_dir="/microtel/nfs/datasets/davis/",
+                        video_length=24,
+                        trajectory_length=5,
+                        mask_threshold=1.0,
+                        tracks_to_sample=32,
+                        split="train",
+                        full_length=True,
+                    )
               ),
               supervised_point_prediction_kwargs=dict(
+                  input_key="davis",
                   prediction_algo='cost_volume_regressor',
                   model_key='tapir_model',
               ),
@@ -98,15 +106,22 @@ def get_config() -> config_dict.ConfigDict:
               # This is useful for getting initial values of metrics
               # at random weights, or when debugging locally if you
               # do not have any train job running.
-              davis_points_path='',
-              jhmdb_path='',
-              robotics_points_path='',
+              davis_points_path=Datasets.TAPNET_DAVIS.value,
+              jhmdb_path="",
+              robotics_points_path=Datasets.TAPNET_ROBOTICS.value,
+              davis_sfm_path=Datasets.SFM_DAVIS.value,
               training=dict(
                   # Note: to sweep n_training_steps, DO NOT sweep these
                   # fields directly. Instead sweep config.training_steps.
                   # Otherwise, decay/stopping logic
                   # is not guaranteed to be consistent.
                   n_training_steps=config.get_oneway_ref('training_steps'),
+              ),
+              eval_kwargs=dict(
+                  video_length=None,
+                  full_video=True,
+                  num_samples=256,
+                  trajectory_length=None,
               ),
               inference=dict(
                   input_video_path='',

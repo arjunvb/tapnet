@@ -60,7 +60,7 @@ def get_config() -> config_dict.ConfigDict:
                     schedule_type="cosine",
                     cosine_decay_kwargs=dict(
                         init_value=0.0,
-                        warmup_steps=100100,
+                        warmup_steps=1000,
                         end_value=0.0,
                     ),
                     optimizer="adam",

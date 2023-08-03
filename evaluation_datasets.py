@@ -22,7 +22,7 @@ import os
 from os import path
 import pickle
 import random
-from typing import Iterable, Mapping, Tuple, Union, Optional
+from typing import Iterable, Mapping, Optional, Tuple, Union, List
 
 from absl import logging
 
@@ -35,19 +35,16 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 
 from .utils import transforms
-from particlesfm.particlesfm_tracker.filter import TrajectoryFilter, Trajectories
-from contrack_utils.consts import Datasets, GOOD_VIDEOS
+from particlesfm.particlesfm_tracker.filter import Trajectories
 
 DatasetElement = Mapping[str, Mapping[str, Union[np.ndarray, str]]]
 
-TRAIN_SIZE = (24, 256, 256, 3)
-
 
 def resize_video(video: np.ndarray, output_size: Tuple[int, int]) -> np.ndarray:
-    """Resize a video to output_size."""
-    # If you have a GPU, consider replacing this with a GPU-enabled resize op,
-    # such as a jitted jax.image.resize.  It will make things faster.
-    return media.resize_video(video, TRAIN_SIZE[1:3])
+  """Resize a video to output_size."""
+  # If you have a GPU, consider replacing this with a GPU-enabled resize op,
+  # such as a jitted jax.image.resize.  It will make things faster.
+  return media.resize_video(video, output_size[1:3])
 
 
 def compute_tapvid_metrics(
@@ -103,21 +100,19 @@ def compute_tapvid_metrics(
 
     metrics = {}
 
-    # Don't evaluate the query point.  Numpy doesn't have one_hot, so we
-    # replicate it by indexing into an identity matrix.
-    one_hot_eye = np.eye(gt_tracks.shape[2])
+    eye = np.eye(gt_tracks.shape[2], dtype=np.int32)
+    if query_mode == 'first':
+        # evaluate frames after the query frame
+        query_frame_to_eval_frames = np.cumsum(eye, axis=1) - eye
+    elif query_mode == 'strided':
+        # evaluate all frames except the query frame
+        query_frame_to_eval_frames = 1 - eye
+    else:
+        raise ValueError('Unknown query mode ' + query_mode)
+
     query_frame = query_points[..., 0]
     query_frame = np.round(query_frame).astype(np.int32)
-    evaluation_points = one_hot_eye[query_frame] == 0
-
-    # If we're using the first point on the track as a query, don't evaluate the
-    # other points.
-    if query_mode == "first":
-        for i in range(gt_occluded.shape[0]):
-            index = np.where(gt_occluded[i] == 0)[0][0]
-            evaluation_points[i, :index] = False
-    elif query_mode != "strided":
-        raise ValueError("Unknown query mode " + query_mode)
+    evaluation_points = query_frame_to_eval_frames[query_frame] > 0
 
     # Occlusion accuracy is simply how often the predicted occlusion equals the
     # ground truth.
@@ -125,7 +120,7 @@ def compute_tapvid_metrics(
         np.equal(pred_occluded, gt_occluded) & evaluation_points,
         axis=(1, 2),
     ) / np.sum(evaluation_points)
-    metrics["occlusion_accuracy"] = occ_acc
+    metrics['occlusion_accuracy'] = occ_acc
 
     # Next, convert the predictions and ground truth positions into pixel
     # coordinates.
@@ -330,20 +325,21 @@ def sample_queries_first(
     }
 
 
-def create_jhmdb_dataset(jhmdb_path: str) -> Iterable[DatasetElement]:
+def create_jhmdb_dataset(
+    jhmdb_path: str, resolution: Optional[Tuple[int, int]] = (256, 256)
+) -> Iterable[DatasetElement]:
     """JHMDB dataset, including fields required for PCK evaluation."""
-    gt_dir = jhmdb_path
     videos = []
-    for file in tf.io.gfile.listdir(path.join(gt_dir, "splits")):
+    for file in tf.io.gfile.listdir(path.join(jhmdb_path, 'splits')):
         # JHMDB file containing the first split, which is standard for this type of
         # evaluation.
-        if not file.endswith("split1.txt"):
+        if not file.endswith('split1.txt'):
             continue
 
-        video_folder = "_".join(file.split("_")[:-2])
-        for video in tf.io.gfile.GFile(path.join(gt_dir, "splits", file), "r"):
+        video_folder = '_'.join(file.split('_')[:-2])
+        for video in tf.io.gfile.GFile(path.join(jhmdb_path, 'splits', file), 'r'):
             video, traintest = video.split()
-            video, _ = video.split(".")
+            video, _ = video.split('.')
 
             traintest = int(traintest)
             video_path = path.join(video_folder, video)
@@ -352,28 +348,28 @@ def create_jhmdb_dataset(jhmdb_path: str) -> Iterable[DatasetElement]:
                 videos.append(video_path)
 
     if not videos:
-        raise ValueError("No JHMDB videos found in directory " + str(jhmdb_path))
+        raise ValueError('No JHMDB videos found in directory ' + str(jhmdb_path))
 
     # Shuffle so numbers converge faster.
     random.shuffle(videos)
 
     for video in videos:
         logging.info(video)
-        joints = path.join(gt_dir, "joint_positions", video, "joint_positions.mat")
+        joints = path.join(jhmdb_path, 'joint_positions', video, 'joint_positions.mat')
 
         if not tf.io.gfile.exists(joints):
-            logging.info("skip %s", video)
+            logging.info('skip %s', video)
             continue
 
-        gt_pose = sio.loadmat(tf.io.gfile.GFile(joints, "rb"))["pos_img"]
+        gt_pose = sio.loadmat(tf.io.gfile.GFile(joints, 'rb'))['pos_img']
         gt_pose = np.transpose(gt_pose, [1, 2, 0])
-        frames = path.join(gt_dir, "Rename_Images", video, "*.png")
+        frames = path.join(jhmdb_path, 'Rename_Images', video, '*.png')
         framefil = tf.io.gfile.glob(frames)
         framefil.sort()
 
         def read_frame(f):
-            im = Image.open(tf.io.gfile.GFile(f, "rb"))
-            im = im.convert("RGB")
+            im = Image.open(tf.io.gfile.GFile(f, 'rb'))
+            im = im.convert('RGB')
             im_data = np.array(im.getdata(), np.uint8)
             return im_data.reshape([im.size[1], im.size[0], 3])
 
@@ -394,88 +390,96 @@ def create_jhmdb_dataset(jhmdb_path: str) -> Iterable[DatasetElement]:
         invalid = invalid[:, :, np.newaxis].astype(np.float32)
         gt_pose_orig = gt_pose
 
-        gt_pose = transforms.convert_grid_coordinates(
-            gt_pose,
-            np.array([width, height]),
-            np.array(TRAIN_SIZE[2:0:-1]),
-        )
-        # Set invalid poses to -1 (outside the frame)
-        gt_pose = (1.0 - invalid) * gt_pose + invalid * (-1.0)
-
-        frames = resize_video(frames, TRAIN_SIZE[1:3])
+        if resolution is not None and resolution != frames.shape[1:3]:
+            frames = resize_video(frames, resolution)
         frames = frames / (255.0 / 2.0) - 1.0
         queries = gt_pose[:, 0]
         queries = np.concatenate(
             [queries[..., 0:1] * 0, queries[..., ::-1]],
             axis=-1,
         )
+        gt_pose = transforms.convert_grid_coordinates(
+            gt_pose,
+            np.array([width, height]),
+            np.array([frames.shape[2], frames.shape[1]]),
+        )
+        # Set invalid poses to -1 (outside the frame)
+        gt_pose = (1.0 - invalid) * gt_pose + invalid * (-1.0)
+
         if gt_pose.shape[1] < frames.shape[0]:
             # Some videos have pose sequences that are shorter than the frame
             # sequence (usually because the person disappears).  In this case,
             # truncate the video.
-            logging.warning("short video!!")
-            frames = frames[:gt_pose.shape[1]]
+            logging.warning('short video!!')
+            frames = frames[: gt_pose.shape[1]]
 
         converted = {
-            "video": frames[np.newaxis, ...],
-            "query_points": queries[np.newaxis, ...],
-            "target_points": gt_pose[np.newaxis, ...],
-            "gt_pose": gt_pose[np.newaxis, ...],
-            "gt_pose_orig": gt_pose_orig[np.newaxis, ...],
-            "occluded": gt_pose[np.newaxis, ..., 0] * 0,
-            "fname": video,
-            "im_size": np.array([height, width]),
+            'video': frames[np.newaxis, ...],
+            'query_points': queries[np.newaxis, ...],
+            'target_points': gt_pose[np.newaxis, ...],
+            'gt_pose': gt_pose[np.newaxis, ...],
+            'gt_pose_orig': gt_pose_orig[np.newaxis, ...],
+            'occluded': gt_pose[np.newaxis, ..., 0] * 0,
+            'fname': video,
+            'im_size': np.array([height, width]),
         }
-        yield {"jhmdb": converted}
+        yield {'jhmdb': converted}
 
 
 def create_kubric_eval_train_dataset(
     mode: str,
+    train_size: Tuple[int, int] = (256, 256),
     max_dataset_size: int = 100,
 ) -> Iterable[DatasetElement]:
     """Dataset for evaluating performance on Kubric training data."""
     res = dataset.create_point_tracking_dataset(
-        split="train",
-        train_size=TRAIN_SIZE[1:3],
+        split='train',
+        train_size=train_size,
         batch_dims=[1],
         shuffle_buffer_size=None,
         repeat=False,
-        vflip="vflip" in mode,
+        vflip='vflip' in mode,
         random_crop=False,
     )
+    np_ds = tfds.as_numpy(res)
 
     num_returned = 0
-
-    for data in res[0]():
+    for data in np_ds:
         if num_returned >= max_dataset_size:
             break
         num_returned += 1
-        yield {"kubric": data}
+        yield {'kubric': data}
 
 
-def create_kubric_eval_dataset(mode: str) -> Iterable[DatasetElement]:
+def create_kubric_eval_dataset(
+    mode: str, train_size: Tuple[int, int] = (256, 256)
+) -> Iterable[DatasetElement]:
     """Dataset for evaluating performance on Kubric val data."""
     res = dataset.create_point_tracking_dataset(
-        split="validation",
+        split='validation',
+        train_size=train_size,
         batch_dims=[1],
         shuffle_buffer_size=None,
         repeat=False,
-        vflip="vflip" in mode,
+        vflip='vflip' in mode,
         random_crop=False,
     )
     np_ds = tfds.as_numpy(res)
 
     for data in np_ds:
-        yield {"kubric": data}
+        yield {'kubric': data}
 
 
 def create_davis_dataset(
-    davis_points_path: str, query_mode: str = "strided", full_resolution=False
+    davis_points_path: str,
+    query_mode: str = 'strided',
+    full_resolution=False,
+    resolution: Optional[Tuple[int, int]] = (256, 256),
 ) -> Iterable[DatasetElement]:
     """Dataset for evaluating performance on DAVIS data."""
     pickle_path = davis_points_path
 
-    with tf.io.gfile.GFile(pickle_path, "rb") as f:
+    with tf.io.gfile.GFile(pickle_path, 'rb') as f:
         davis_points_dataset = pickle.load(f)
 
     if full_resolution:
@@ -493,61 +497,63 @@ def create_davis_dataset(
         else:
             video_name = tmp
             frames = davis_points_dataset[video_name]['video']
-            frames = resize_video(frames, TRAIN_SIZE[1:3])
+            if resolution is not None and resolution != frames.shape[1:3]:
+                frames = resize_video(frames, resolution)
 
         frames = frames.astype(np.float32) / 255.0 * 2.0 - 1.0
-        target_points = davis_points_dataset[video_name]["points"]
-        target_occ = davis_points_dataset[video_name]["occluded"]
-        target_points = transforms.convert_grid_coordinates(
-            target_points,
-            np.array([1.0, 1.0]),
-            np.array([frames.shape[-2], frames.shape[-3]]),
-        )
+        target_points = davis_points_dataset[video_name]['points']
+        target_occ = davis_points_dataset[video_name]['occluded']
+        target_points = target_points * np.array([frames.shape[2], frames.shape[1]])
 
-        if query_mode == "strided":
+        if query_mode == 'strided':
             converted = sample_queries_strided(target_occ, target_points, frames)
-        elif query_mode == "first":
+        elif query_mode == 'first':
             converted = sample_queries_first(target_occ, target_points, frames)
         else:
-            raise ValueError(f"Unknown query mode {query_mode}.")
+            raise ValueError(f'Unknown query mode {query_mode}.')
 
-        yield {"davis": converted}
+        yield {'davis': converted}
 
 
 def create_rgb_stacking_dataset(
-    robotics_points_path: str, query_mode: str = "strided"
+    robotics_points_path: str,
+    query_mode: str = 'strided',
+    resolution: Optional[Tuple[int, int]] = (256, 256),
 ) -> Iterable[DatasetElement]:
     """Dataset for evaluating performance on robotics data."""
     pickle_path = robotics_points_path
 
-    with tf.io.gfile.GFile(pickle_path, "rb") as f:
+    with tf.io.gfile.GFile(pickle_path, 'rb') as f:
         robotics_points_dataset = pickle.load(f)
 
     for example in robotics_points_dataset:
-        frames = example["video"]
+        frames = example['video']
+        if resolution is not None and resolution != frames.shape[1:3]:
+            frames = resize_video(frames, resolution)
         frames = frames.astype(np.float32) / 255.0 * 2.0 - 1.0
-        target_points = example["points"]
-        target_occ = example["occluded"]
-        target_points *= np.array([TRAIN_SIZE[2], TRAIN_SIZE[1]])
+        target_points = example['points']
+        target_occ = example['occluded']
+        target_points = target_points * np.array([frames.shape[2], frames.shape[1]])
 
-        if query_mode == "strided":
+        if query_mode == 'strided':
             converted = sample_queries_strided(target_occ, target_points, frames)
-        elif query_mode == "first":
+        elif query_mode == 'first':
             converted = sample_queries_first(target_occ, target_points, frames)
         else:
-            raise ValueError(f"Unknown query mode {query_mode}.")
+            raise ValueError(f'Unknown query mode {query_mode}.')
 
-        yield {"robotics": converted}
+        yield {'robotics': converted}
 
 
 def create_kinetics_dataset(
-    kinetics_path: str, query_mode: str = "strided"
+    kinetics_path: str, query_mode: str = 'strided',
+    resolution: Optional[Tuple[int, int]] = (256, 256),
 ) -> Iterable[DatasetElement]:
     """Dataset for evaluating performance on Kinetics point tracking."""
 
-    all_paths = tf.io.gfile.glob(path.join(kinetics_path, "*_of_0010.pkl"))
+    all_paths = tf.io.gfile.glob(path.join(kinetics_path, '*_of_0010.pkl'))
     for pickle_path in all_paths:
-        with open(pickle_path, "rb") as f:
+        with open(pickle_path, 'rb') as f:
             data = pickle.load(f)
             if isinstance(data, dict):
                 data = list(data.values())
@@ -556,7 +562,7 @@ def create_kinetics_dataset(
         for idx in range(len(data)):
             example = data[idx]
 
-            frames = example["video"]
+            frames = example['video']
 
             if isinstance(frames[0], bytes):
                 # TAP-Vid is stored and JPEG bytes rather than `np.ndarray`s.
@@ -567,91 +573,22 @@ def create_kinetics_dataset(
 
                 frames = np.array([decode(frame) for frame in frames])
 
-            if frames.shape[1] > TRAIN_SIZE[1] or frames.shape[2] > TRAIN_SIZE[2]:
-                frames = resize_video(frames, TRAIN_SIZE[1:3])
+            if resolution is not None and resolution != frames.shape[1:3]:
+                frames = resize_video(frames, resolution)
 
             frames = frames.astype(np.float32) / 255.0 * 2.0 - 1.0
-            target_points = example["points"]
-            target_occ = example["occluded"]
-            target_points *= np.array([TRAIN_SIZE[2], TRAIN_SIZE[1]])
+            target_points = example['points']
+            target_occ = example['occluded']
+            target_points *= np.array([frames.shape[2], frames.shape[1]])
 
-            if query_mode == "strided":
+            if query_mode == 'strided':
                 converted = sample_queries_strided(target_occ, target_points, frames)
-            elif query_mode == "first":
+            elif query_mode == 'first':
                 converted = sample_queries_first(target_occ, target_points, frames)
             else:
-                raise ValueError(f"Unknown query mode {query_mode}.")
+                raise ValueError(f'Unknown query mode {query_mode}.')
 
-            yield {"kinetics": converted}
-
-
-def create_davis_split_dataset(
-    davis_points_path: str, query_mode: str = "strided"
-) -> Iterable[DatasetElement]:
-    pickle_path = davis_points_path
-
-    with tf.io.gfile.GFile(pickle_path, "rb") as f:
-        davis_points_dataset = pickle.load(f)
-
-    # Need to split labels into distinct trajectories
-    for video_name in davis_points_dataset:
-        frames = davis_points_dataset[video_name]["video"]
-        frames = media.resize_video(frames, TRAIN_SIZE[1:3])
-        frames = frames.astype(np.float32) / 255.0 * 2.0 - 1.0
-        points = davis_points_dataset[video_name]["points"]
-        occ = davis_points_dataset[video_name]["occluded"]
-        points *= np.array([TRAIN_SIZE[2], TRAIN_SIZE[1]])
-
-        target_points = []
-        target_occ = []
-
-        length = points.shape[1]
-        valid = ~occ
-        for k in range(points.shape[0]):
-            # trajectory is valid for whole frame - keep it
-            if np.all(valid[k, :]):
-                target_points.append(points[k, ...])
-                target_occ.append(occ[k, ...])
-                continue
-            
-            # Split trajectory into valid segments
-            indices = np.flatnonzero(valid[k, 1:] != valid[k, :-1]) + 1
-            new_trajectories = np.split(points[k, ...], indices, axis=0)
-
-            if np.all(new_trajectories[0] == 0.0):
-                indices = indices[1::2]
-                new_trajectories = new_trajectories[1::2]
-            else:
-                indices = indices[::2]
-                new_trajectories = new_trajectories[::2]
-
-            # Fix for case when trajectory is valid at the end
-            if indices.shape[0] == len(new_trajectories) - 1:
-                indices = np.concatenate([indices, [length]])
-
-            # Build new trajectories out of valid segments
-            for idx, traj in zip(indices, new_trajectories):
-                traj_length = traj.shape[0]
-                new_traj = np.full((length, 2), 0.0, dtype=np.float32)
-                new_occ = np.full((length,), True, dtype=bool)
-                new_traj[idx - traj_length:idx, :] = traj
-                new_occ[idx - traj_length:idx] = False
-
-                target_points.append(new_traj)
-                target_occ.append(new_occ)
-
-        # Concatenate trajectories
-        target_points = np.stack(target_points, axis=0)
-        target_occ = np.stack(target_occ, axis=0)
-
-        if query_mode == "strided":
-            converted = sample_queries_strided(target_occ, target_points, frames)
-        elif query_mode == "first":
-            converted = sample_queries_first(target_occ, target_points, frames)
-        else:
-            raise ValueError(f"Unknown query mode {query_mode}.")
-
-        yield {"davis": converted}
+            yield {'kinetics': converted}
 
 
 def __create_sfm_dataset(
@@ -660,14 +597,15 @@ def __create_sfm_dataset(
     query_mode: str = "strided",
     num_samples: int = 256,
     full_video: bool = False,
-    video_length: Optional[int] = None,
+    video_length: Optional[Union[int, List[int]]] = None,
     trajectory_length: Optional[int] = None,
+    resolution: Optional[Tuple[int, int]] = (256, 256)
 ):
     for video_name in ds:
         frames = ds[video_name]
         # Frames.shape[1:3] is shape [height, width], so we reverse it to be [x, y] format
         frames_shape = frames.shape[1:3][::-1]
-        frames = resize_video(frames, TRAIN_SIZE[1:3])
+        frames = resize_video(frames, resolution)
         frames = frames.astype(np.float32) / 255.0 * 2.0 - 1.0
 
         # Get ParticleSfM psuedolabels
@@ -676,8 +614,16 @@ def __create_sfm_dataset(
         # Reduce video to length video_length - need to do this first 
         # since this affects the trajectory length
         if video_length is not None:
-            frames = frames[:video_length, ...]
-            trajectories = trajectories.sliceFrames(video_length)
+            if isinstance(video_length, int):
+                frames = frames[:video_length, ...]
+                trajectories = trajectories.sliceFrames(video_length)
+            elif isinstance(video_length, list):
+                if len(video_length) <= 3:
+                    frames = frames[slice(*video_length), ...]
+                else:
+                    raise ValueError(f"Invalid video length! video_length must be an int or a list of 2-3 numbers.")
+
+                trajectories = trajectories.sliceFrames(*video_length)
 
         # Filter for trajectories valid in all frames
         if full_video:
@@ -685,8 +631,13 @@ def __create_sfm_dataset(
         elif trajectory_length is not None:
             trajectories = trajectories.filterLength(trajectory_length)
 
+        # Sample trajectories
         sampled_trajectories = trajectories.sample(num_samples)
-        final_resized_trajectories = sampled_trajectories.resize([TRAIN_SIZE[2], TRAIN_SIZE[1]])
+        if sampled_trajectories.num_trajectories == 0:
+            continue
+
+        # Resize trajectories to match video size
+        final_resized_trajectories = sampled_trajectories.resize(resolution)
         target_points, valid_mask = final_resized_trajectories.toData()
         target_occ = ~valid_mask
 
@@ -713,8 +664,8 @@ def create_sfm_davis_dataset(
 
     # Preprocess dataset
     ds = {
-        video_name: data["video"] for video_name, data in davis_points_dataset.items()
-        if video_name in GOOD_VIDEOS
+        video_name: data["video"]
+        for video_name, data in davis_points_dataset.items()
     }
 
     sfm_ds = __create_sfm_dataset(

@@ -93,11 +93,13 @@ def get_config() -> config_dict.ConfigDict:
                 davis_points_path=Datasets.TAPNET_DAVIS.value,
                 jhmdb_path="",
                 robotics_points_path=Datasets.TAPNET_ROBOTICS.value,
+                kinetics_points_path=Datasets.TAPNET_KINETICS.value,
                 davis_sfm_path=Datasets.SFM_DAVIS.value,
                 eval_kwargs=dict(
-                    video_length=24,
-                    full_length=True,
-                    num_samples=20,
+                    video_length=None,
+                    full_video=True,
+                    num_samples=256,
+                    trajectory_length=None,
                 ),
                 training=dict(
                     # Note: to sweep n_training_steps, DO NOT sweep these
