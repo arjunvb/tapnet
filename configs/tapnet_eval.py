@@ -92,7 +92,7 @@ def get_config() -> config_dict.ConfigDict:
                 davis_sfm_path=Datasets.SFM_DAVIS.value,
                 eval_kwargs=dict(
                     video_length=24,
-                    full_length=True,
+                    full_video=True,
                     num_samples=256,
                 ),
                 training=dict(
