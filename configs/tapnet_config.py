@@ -17,8 +17,6 @@
 from jaxline import base_config
 from ml_collections import config_dict
 
-from tapnet import tapnet_model
-
 
 # We define the experiment launch config in the same file as the experiment to
 # keep things self-contained in a single file.
@@ -46,7 +44,7 @@ def get_config() -> config_dict.ConfigDict:
     config.experiment_kwargs = config_dict.ConfigDict(
         dict(
             config=dict(
-                sweep_name="default_sweep",
+                sweep_name='default_sweep',
                 save_final_checkpoint_as_npy=True,
                 # `enable_double_transpose` should always be false when using 1D.
                 # For other D It is also completely untested and very unlikely
@@ -55,13 +53,13 @@ def get_config() -> config_dict.ConfigDict:
                     base_lr=2e-3,
                     max_norm=-1,  # < 0 to turn off.
                     weight_decay=1e-2,
-                    schedule_type="cosine",
+                    schedule_type='cosine',
                     cosine_decay_kwargs=dict(
                         init_value=0.0,
                         warmup_steps=5000,
                         end_value=0.0,
                     ),
-                    optimizer="adam",
+                    optimizer='adam',
                     # Optimizer-specific kwargs.
                     adam_kwargs=dict(
                         b1=0.9,
@@ -72,49 +70,45 @@ def get_config() -> config_dict.ConfigDict:
                 fast_variables=tuple(),
                 shared_modules=dict(
                     shared_module_names=config.get_oneway_ref(
-                        "shared_module_names",
+                        'shared_module_names',
                     ),
                     tapnet_model_kwargs=dict(),
                 ),
                 datasets=dict(
-                    dataset_names=config.get_oneway_ref("dataset_names"),
+                    dataset_names=config.get_oneway_ref('dataset_names'),
                     kubric_kwargs=dict(
                         batch_dims=8,
                         shuffle_buffer_size=128,
-                        train_size=tapnet_model.TRAIN_SIZE[1:3],
+                        train_size=(256, 256),
                     ),
                 ),
                 supervised_point_prediction_kwargs=dict(
-                    prediction_algo="cost_volume_regressor",
+                    prediction_algo='cost_volume_regressor',
                 ),
-                checkpoint_dir=config.get_oneway_ref("checkpoint_dir"),
-                evaluate_every=config.get_oneway_ref("evaluate_every"),
-                eval_modes=config.get_oneway_ref("eval_modes"),
+                checkpoint_dir=config.get_oneway_ref('checkpoint_dir'),
+                evaluate_every=config.get_oneway_ref('evaluate_every'),
+                eval_modes=config.get_oneway_ref('eval_modes'),
                 # If true, run evaluate() on the experiment once before
                 # you load a checkpoint.
                 # This is useful for getting initial values of metrics
                 # at random weights, or when debugging locally if you
                 # do not have any train job running.
-                davis_points_path="",
-                jhmdb_path="",
-                robotics_points_path="",
+                davis_points_path='',
+                jhmdb_path='',
+                robotics_points_path='',
                 training=dict(
                     # Note: to sweep n_training_steps, DO NOT sweep these
                     # fields directly. Instead sweep config.training_steps.
                     # Otherwise, decay/stopping logic
                     # is not guaranteed to be consistent.
-                    n_training_steps=config.get_oneway_ref("training_steps"),
+                    n_training_steps=config.get_oneway_ref('training_steps'),
                 ),
                 inference=dict(
-                    input_video_path="",
-                    input_query_path="",
-                    output_video_path="",
-                    output_track_path="",
-                    output_occlusion_path="",
+                    input_video_path='',
+                    output_video_path='',
                     resize_height=256,  # video height resized to before inference
                     resize_width=256,  # video width resized to before inference
                     num_points=20,  # number of random points to sample
-                    random_points=True,
                 ),
             )
         )
